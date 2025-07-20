@@ -24,7 +24,7 @@ from typing import Dict, Any
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from pypoe.config import get_config
+from pypoe.core.config import get_config
 from pypoe.core.client import PoeChatClient
 
 async def test_config():
@@ -63,11 +63,8 @@ async def test_history_manager_import():
         print(f"✅ HistoryManager imported: {HistoryManager}")
         print(f"   Module: {HistoryManager.__module__}")
         
-        # Test which history manager is being used
-        if hasattr(HistoryManager, '__module__') and 'enhanced_history' in HistoryManager.__module__:
-            print("   Type: EnhancedHistoryManager")
-        else:
-            print("   Type: Basic HistoryManager")
+        # HistoryManager with full feature set
+        print("   Type: HistoryManager (with media and topic support)")
         
         return HistoryManager
     except Exception as e:
@@ -82,16 +79,12 @@ async def test_history_initialization(config, HistoryManager):
         # Test different initialization patterns
         print("   Testing direct initialization...")
         
-        if hasattr(HistoryManager, '__module__') and 'enhanced_history' in HistoryManager.__module__:
-            # EnhancedHistoryManager
-            media_dir = Path(config.database_path).parent / "media"
-            history = HistoryManager(
-                db_path=str(config.database_path),
-                media_dir=str(media_dir)
-            )
-        else:
-            # Basic HistoryManager
-            history = HistoryManager(db_path=str(config.database_path))
+        # Initialize HistoryManager with media support
+        media_dir = Path(config.database_path).parent / "media"
+        history = HistoryManager(
+            db_path=str(config.database_path),
+            media_dir=str(media_dir)
+        )
         
         print("   ✅ History manager instance created")
         

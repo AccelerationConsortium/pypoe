@@ -12,7 +12,7 @@ Package Structure:
 - tests: Test suites (always available)
 """
 
-from .config import Config, get_config
+from .core.config import Config, get_config
 
 # Core POE functionality (always available)
 from .core import PoeChatClient, HistoryManager

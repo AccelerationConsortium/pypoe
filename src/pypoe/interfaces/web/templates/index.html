@@ -50,7 +50,7 @@
                 {% for conversation in conversations %}
                 <div class="conversation-item" data-id="{{ conversation.id }}">
                     <div class="conversation-info">
-                        <h4>{{ conversation.title }}</h4>
+                        <h4>{{ conversation.topic or conversation.title }}</h4>
                         <p><i class="fas fa-robot"></i> {{ conversation.bot_name }}</p>
                         <small>{{ conversation.created_at }}</small>
                     </div>
@@ -72,9 +72,6 @@
                         <span class="app-title">PyPoe Chat</span>
                     </div>
                     <div class="mode-selector">
-                        <div class="mode-description" id="mode-description">
-                            Single AI assistant
-                        </div>
                         <div class="mode-controls">
                             <label for="global-chat-mode">Mode:</label>
                             <select id="global-chat-mode">
@@ -157,8 +154,8 @@
             </div>
             <form id="new-chat-form">
                 <div class="form-group">
-                    <label for="chat-title">Title:</label>
-                    <input type="text" id="chat-title" name="title" required placeholder="Enter conversation title">
+                    <label for="chat-title">Title: <span style="color: #7f8c8d; font-weight: normal;">(optional)</span></label>
+                    <input type="text" id="chat-title" name="title" placeholder="Leave blank to auto-generate from timestamp">
                 </div>
                 <div class="form-group">
                     <label for="chat-mode">Chat Mode:</label>

@@ -299,7 +299,7 @@ async def main():
     
     # Load config
     try:
-        from pypoe.config import get_config
+        from pypoe.core.config import get_config
         config = get_config()
         print_success(f"Config loaded, database path: {config.database_path}")
     except Exception as e:

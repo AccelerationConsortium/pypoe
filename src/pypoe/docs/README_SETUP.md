@@ -117,7 +117,7 @@ EOF
 
 **Interactive Setup**:
 ```bash
-# Use the setup script
+# Interactive setup script
 python src/pypoe/scripts/setup/setup_credentials.py
 ```
 
@@ -444,7 +444,7 @@ pypoe config
 pypoe chat "test" --bot GPT-3.5-Turbo
 
 # Check .env file location
-python -c "from pypoe.config import load_config; print(load_config())"
+python -c "from pypoe.core.config import get_config; print(get_config())"
 ```
 
 #### Network Issues

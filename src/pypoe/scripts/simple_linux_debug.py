@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Add PyPoe to path
 try:
-    from pypoe.config import get_config
+    from pypoe.core.config import get_config
     from pypoe.core.client import PoeChatClient
     from pypoe.interfaces.web.app import WebApp
     print("✅ PyPoe imports successful")

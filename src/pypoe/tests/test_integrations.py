@@ -28,7 +28,7 @@ def test_slack_bot_import_graceful_failure():
 def test_cli_slack_command_import():
     """Test that CLI can be imported without errors."""
     try:
-        from pypoe.cli import main
+        from pypoe.core.cli import main
         # Should not raise import errors
     except ImportError:
         pytest.fail("CLI should always be importable") 

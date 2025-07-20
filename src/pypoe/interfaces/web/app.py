@@ -12,9 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-from ...config import get_config, Config
+from ...core.config import get_config, Config
 from ...core.client import PoeChatClient
-from ...logging_db import logger
+from ...core.logging_db import logger
 
 # TODO: Add support for remote access of the webpage with username and password protection
 # This would involve:
@@ -40,7 +40,7 @@ if not WEB_AVAILABLE:
 
 # Pydantic models for request bodies
 class ConversationCreate(BaseModel):
-    title: str
+    title: Optional[str] = None  # Optional title, will generate timestamp if empty
     bot_name: str
     chat_mode: Optional[str] = "chatbot"  # chatbot, group, debate
 
@@ -108,6 +108,133 @@ class WebApp:
             }
         )
     
+    async def _generate_topic_from_message(self, first_message: str) -> str:
+        """Generate a short topic (less than 5 words) from the first user message."""
+        try:
+            # First try the fallback method (no AI required)
+            fallback_topic = self._generate_fallback_topic(first_message)
+            if fallback_topic and fallback_topic != "Chat Topic":
+                print(f"✅ Using fallback topic: '{fallback_topic}'")
+                return fallback_topic
+            
+            # If fallback is not good enough, try AI models
+            models_to_try = ["GPT-4o-mini", "GPT-3.5-Turbo", "Claude-3.5-Sonnet"]
+            
+            for model in models_to_try:
+                try:
+                    # Use a fast model to generate the topic
+                    topic_prompt = f"Summarize this question/message in exactly 3-4 words (no more than 5 words): '{first_message}'"
+                    
+                    full_response = ""
+                    import asyncio
+                    
+                    # Add timeout to prevent hanging
+                    try:
+                        async with asyncio.timeout(10):  # 10 second timeout
+                            async for chunk in self.client.send_message(
+                                message=topic_prompt,
+                                bot_name=model,
+                                save_history=False  # Don't save this internal conversation
+                            ):
+                                full_response += chunk
+                    except asyncio.TimeoutError:
+                        print(f"⚠️  Topic generation timed out for {model}")
+                        continue
+                    
+                    # Clean up the response - remove quotes, extra punctuation
+                    topic = full_response.strip().strip('"').strip("'").strip('.').strip()
+                    
+                    # Ensure it's not too long (max 5 words)
+                    words = topic.split()
+                    if len(words) > 5:
+                        topic = ' '.join(words[:5])
+                    
+                    if topic and topic.lower() not in ['error', 'failed', 'sorry', 'cannot']:
+                        print(f"✅ Generated topic using {model}: '{topic}'")
+                        return topic
+                        
+                except Exception as model_error:
+                    print(f"⚠️  Failed to generate topic with {model}: {model_error}")
+                    continue
+            
+            # If all models fail, use fallback
+            print("⚠️  All models failed for topic generation, using fallback")
+            return self._generate_fallback_topic(first_message)
+            
+        except Exception as e:
+            print(f"Warning: Failed to generate topic: {e}")
+            return self._generate_fallback_topic(first_message)
+    
+    def _generate_fallback_topic(self, first_message: str) -> str:
+        """Generate a simple fallback topic from the first message."""
+        try:
+            # Remove common words and punctuation
+            import re
+            cleaned_message = re.sub(r'[^\w\s]', '', first_message.lower())
+            
+            # Split into words and filter out common words
+            common_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may', 'might', 'must', 'shall', 'what', 'when', 'where', 'why', 'how', 'who', 'which', 'that', 'this', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'hello', 'hi', 'hey', 'please', 'help', 'thanks', 'thank'}
+            
+            words = [word for word in cleaned_message.split() if word not in common_words and len(word) > 2]
+            
+            # Take first 3-4 meaningful words
+            if words:
+                topic = ' '.join(words[:4])
+                return topic.title()  # Capitalize first letter of each word
+            
+            # If no meaningful words, use first few characters
+            if len(first_message) > 10:
+                return first_message[:15].strip().title()
+            else:
+                return first_message.strip().title()
+                
+        except Exception as e:
+            print(f"Warning: Fallback topic generation failed: {e}")
+            # Last resort: use first few words
+            words = first_message.split()[:3]
+            return ' '.join(words) if words else "Chat Topic"
+    
+    async def _generate_and_save_topic(self, conversation_id: str, user_message: str):
+        """Generate and save topic in background without blocking the WebSocket."""
+        try:
+            print(f"🔄 Starting topic generation for conversation {conversation_id}")
+            print(f"📝 First message: '{user_message[:100]}...'")
+            
+            topic = await self._generate_topic_from_message(user_message)
+            
+            print(f"🎯 Generated topic: '{topic}'")
+            
+            # Update the conversation with the generated topic
+            import aiosqlite
+            async with self.client.history._lock:
+                async with aiosqlite.connect(self.client.history.db_path) as db:
+                    await db.execute(
+                        "UPDATE conversations SET topic = ? WHERE id = ?",
+                        (topic, conversation_id)
+                    )
+                    await db.commit()
+            
+            print(f"✅ Successfully saved topic '{topic}' for conversation {conversation_id}")
+            
+            # Notify connected clients about the topic update
+            try:
+                for connection in self.active_connections:
+                    try:
+                        await connection.send_text(json.dumps({
+                            "type": "topic_updated",
+                            "conversation_id": conversation_id,
+                            "topic": topic
+                        }))
+                    except Exception as notify_error:
+                        print(f"⚠️  Failed to notify client about topic update: {notify_error}")
+            except Exception as notify_error:
+                print(f"⚠️  Failed to notify clients about topic update: {notify_error}")
+            
+        except Exception as e:
+            print(f"⚠️  Failed to generate and save topic: {e}")
+            import traceback
+            traceback.print_exc()
+
     def _check_credentials(self, credentials: HTTPBasicCredentials = Depends(HTTPBasic())):
         if not self.config.web_username:
             return
@@ -225,9 +352,19 @@ class WebApp:
         async def create_conversation(conversation_data: ConversationCreate):
             """Create a new conversation."""
             try:
+                # Generate timestamp-based title if title is empty
+                from datetime import datetime
+                if not conversation_data.title or conversation_data.title.strip() == "":
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    title = f"Chat {timestamp}"
+                else:
+                    title = conversation_data.title.strip()
+                
                 conversation_id = await self.client.history.create_conversation(
-                    title=conversation_data.title,
-                    bot_name=conversation_data.bot_name
+                    title=title,
+                    bot_name=conversation_data.bot_name,
+                    chat_mode=conversation_data.chat_mode,
+                    topic=None  # Topic will be generated from first message
                 )
                 return JSONResponse({"conversation_id": conversation_id})
             except Exception as e:
@@ -271,19 +408,22 @@ class WebApp:
         async def delete_conversation(conversation_id: str):
             """Delete a conversation with enhanced media cleanup tracking."""
             try:
-                # Check if enhanced history is available for media tracking
-                media_cleanup_info = {"enhanced_storage": False, "media_files_deleted": 0}
+                # Check if media tracking is available for cleanup
+                media_cleanup_info = {"media_tracking": False, "media_files_deleted": 0}
                 
-                if hasattr(self.client.history, 'get_media_stats'):
+                # Check if media tracking is available
+                media_tracking_available = hasattr(self.client.history, 'get_media_stats')
+
+                if media_tracking_available:
                     # Enhanced storage available - get media stats before deletion
                     stats_before = await self.client.history.get_media_stats()
-                    media_cleanup_info["enhanced_storage"] = True
+                    media_cleanup_info["media_tracking"] = True
                     media_cleanup_info["stats_before"] = stats_before
                 
                 # Delete the conversation
                 await self.client.delete_conversation(conversation_id)
                 
-                if media_cleanup_info["enhanced_storage"]:
+                if media_cleanup_info["media_tracking"]:
                     # Get stats after deletion to calculate cleanup
                     stats_after = await self.client.history.get_media_stats()
                     media_cleanup_info["stats_after"] = stats_after
@@ -314,7 +454,7 @@ class WebApp:
                 basic_stats = {
                     "total_conversations": total_conversations,
                     "database_path": str(self.config.database_path),
-                    "enhanced_storage_available": hasattr(self.client.history, 'get_media_stats')
+                    "media_tracking_available": hasattr(self.client.history, 'get_media_stats')
                 }
                 
                 # Enhanced storage stats (if available)
@@ -412,16 +552,16 @@ class WebApp:
             try:
                 conversations = await self.client.get_conversations()
                 
-                # If enhanced storage is available, add media info
+                # If media storage is available, add media info
                 if hasattr(self.client.history, 'get_conversations'):
-                    enhanced_conversations = await self.client.history.get_conversations()
+                    conversations_with_media = await self.client.history.get_conversations()
                     
-                    # Create a lookup for enhanced data
-                    enhanced_lookup = {conv['id']: conv for conv in enhanced_conversations}
+                    # Create a lookup for media data
+                    media_lookup = {conv['id']: conv for conv in conversations_with_media}
                     
                     # Enhance the conversation data
                     for conv in conversations:
-                        enhanced_data = enhanced_lookup.get(conv['id'], {})
+                        enhanced_data = media_lookup.get(conv['id'], {})
                         conv.update({
                             'media_count': enhanced_data.get('media_count', 0),
                             'has_media': enhanced_data.get('has_media', False),
@@ -1158,6 +1298,60 @@ class WebApp:
         @self.app.websocket("/ws/chat/{conversation_id}")
         async def websocket_chat(websocket: WebSocket, conversation_id: str):
             """WebSocket endpoint for real-time chat."""
+            
+            # Handle authentication for WebSocket if enabled
+            if self.security:
+                auth_valid = False
+                
+                # Method 1: Try authorization header (if browser supports it)
+                try:
+                    auth_header = websocket.headers.get("authorization", "")
+                    if auth_header.startswith("Basic "):
+                        import base64
+                        import secrets
+                        encoded_credentials = auth_header.split(" ", 1)[1]
+                        decoded_credentials = base64.b64decode(encoded_credentials).decode("utf-8")
+                        username, password = decoded_credentials.split(":", 1)
+                        correct_username = secrets.compare_digest(username, self.config.web_username)
+                        correct_password = secrets.compare_digest(password, self.config.web_password)
+                        auth_valid = correct_username and correct_password
+                except Exception:
+                    pass
+                
+                # Method 2: Try query parameters (WebSocket fallback)
+                if not auth_valid:
+                    query_params = dict(websocket.query_params)
+                    if "username" in query_params and "password" in query_params:
+                        import secrets
+                        username = query_params["username"]
+                        password = query_params["password"]
+                        correct_username = secrets.compare_digest(username, self.config.web_username)
+                        correct_password = secrets.compare_digest(password, self.config.web_password)
+                        auth_valid = correct_username and correct_password
+                
+                # Method 3: Check if connection is from same origin (localhost exception)
+                if not auth_valid:
+                    origin = websocket.headers.get("origin", "")
+                    host = websocket.headers.get("host", "")
+                    # Allow localhost connections if they're from the same host
+                    if origin and host:
+                        import urllib.parse
+                        try:
+                            parsed_origin = urllib.parse.urlparse(origin)
+                            if (parsed_origin.hostname in ["localhost", "127.0.0.1"] and 
+                                host.startswith(("localhost:", "127.0.0.1:"))):
+                                auth_valid = True
+                        except Exception:
+                            pass
+                
+                # Method 4: If no security is configured, allow all connections
+                if not auth_valid and not self.config.web_username:
+                    auth_valid = True
+                
+                if not auth_valid:
+                    await websocket.close(code=1008, reason="Authentication required")
+                    return
+            
             await websocket.accept()
             self.active_connections.append(websocket)
             
@@ -1261,6 +1455,24 @@ class WebApp:
                         "type": "bot_response_end",
                         "role": "assistant"
                     }))
+                    
+                    # Generate topic if this was the first user message and no topic exists yet
+                    try:
+                        conversation = next((c for c in conversations if c['id'] == conversation_id), None)
+                        if conversation:
+                            # Check if conversation has no topic yet
+                            if not conversation.get('topic'):
+                                # Get all messages to check if this was the first user message
+                                all_messages = await self.client.get_conversation_messages(conversation_id)
+                                user_messages = [msg for msg in all_messages if msg.get('role') == 'user']
+                                
+                                # If this was the first user message, generate a topic in background
+                                if len(user_messages) == 1:
+                                    # Use asyncio.create_task to run topic generation in background
+                                    import asyncio
+                                    asyncio.create_task(self._generate_and_save_topic(conversation_id, user_message))
+                    except Exception as e:
+                        print(f"⚠️  Failed to start topic generation: {e}")
                     
             except WebSocketDisconnect:
                 self.active_connections.remove(websocket)

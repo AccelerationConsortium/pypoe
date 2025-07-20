@@ -6,13 +6,16 @@ class PyPoeApp {
         this.stats = {};
         this.currentConversation = null;
         this.streamingContent = '';
+        this.messageTimeout = null;
         
         this.initializeElements();
         this.bindEvents();
-        this.loadInitialData();
-        
-        // Initialize mode description
-        this.updateChatMode();
+        this.loadInitialData().then(() => {
+            // Initialize mode description after data is loaded
+            setTimeout(() => {
+                this.updateCurrentBotDisplay();
+            }, 100); // Small delay to ensure DOM is ready
+        });
     }
     
     initializeElements() {
@@ -146,7 +149,7 @@ class PyPoeApp {
         this.conversationsList.innerHTML = this.conversations.map(conv => `
             <div class="conversation-item" data-id="${conv.id}">
                 <div class="conversation-info">
-                    <h4>${this.escapeHtml(conv.title)}</h4>
+                    <h4>${conv.topic ? this.escapeHtml(conv.topic) : this.escapeHtml(conv.title)}</h4>
                     <p><i class="fas fa-robot"></i> ${this.escapeHtml(conv.bot_name)}</p>
                     <small>${conv.created_at}</small>
                 </div>
@@ -160,41 +163,52 @@ class PyPoeApp {
         this.bindConversationEvents();
     }
     
-    async selectConversation(conversationId) {
-        this.currentConversationId = conversationId;
-        
-        // Update active conversation in sidebar
-        this.conversationsList.querySelectorAll('.conversation-item').forEach(item => {
-            item.classList.toggle('active', item.dataset.id === conversationId);
-        });
-        
-        // Load conversation details
-        const conv = this.conversations.find(c => c.id === conversationId);
-        if (conv) {
-            this.currentConversation = conv;
-            this.currentChatTitle.textContent = conv.title;
-            this.currentBotName.textContent = `Bot: ${conv.bot_name} | Mode: ${conv.chat_mode || 'chatbot'}`;
-            if (this.globalBotSelect) {
-                this.globalBotSelect.value = conv.bot_name;
+    async selectConversation(conversationId, retryCount = 0) {
+        try {
+            this.currentConversationId = conversationId;
+            
+            // Update active conversation in sidebar
+            this.conversationsList.querySelectorAll('.conversation-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.id === conversationId);
+            });
+            
+            // Load conversation details
+            const conv = this.conversations.find(c => c.id === conversationId);
+            if (conv) {
+                this.currentConversation = conv;
+                this.currentChatTitle.textContent = conv.topic || conv.title;
+                this.currentBotName.textContent = `Bot: ${conv.bot_name} | Mode: ${conv.chat_mode || 'chatbot'}`;
+                if (this.globalBotSelect) {
+                    this.globalBotSelect.value = conv.bot_name;
+                }
+                if (this.globalChatMode && conv.chat_mode) {
+                    this.globalChatMode.value = conv.chat_mode;
+                    this.updateChatMode(); // Update the label when conversation is selected
+                }
             }
-            if (this.globalChatMode && conv.chat_mode) {
-                this.globalChatMode.value = conv.chat_mode;
+            
+            // Update locking logic based on new state
+            this.updateLockingLogic();
+            
+            // Load messages
+            await this.loadConversationMessages(conversationId);
+            
+            // Enable input
+            this.enableInput();
+            
+            // Setup websocket
+            await this.setupWebSocket(conversationId);
+            
+        } catch (error) {
+            console.error('Error selecting conversation:', error);
+            
+            // Retry logic for new conversations that might not be immediately available
+            if (retryCount < 3 && error.message && error.message.includes('not found')) {
+                console.log(`Retrying conversation selection (attempt ${retryCount + 1}/3)...`);
+                await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+                return this.selectConversation(conversationId, retryCount + 1);
             }
         }
-        
-        // Update locking logic based on new state
-        this.updateLockingLogic();
-        
-        // Load messages
-        await this.loadConversationMessages(conversationId);
-        
-        // Enable input
-        this.messageInput.disabled = false;
-        this.sendBtn.disabled = false;
-        this.messageInput.placeholder = 'Type your message here...';
-        
-        // Setup websocket
-        this.setupWebSocket(conversationId);
     }
     
     async loadConversationMessages(conversationId) {
@@ -221,15 +235,40 @@ class PyPoeApp {
         }
     }
     
-    setupWebSocket(conversationId) {
+    async setupWebSocket(conversationId) {
+        // Clear any existing error timeout
+        if (this.websocketErrorTimeout) {
+            clearTimeout(this.websocketErrorTimeout);
+            this.websocketErrorTimeout = null;
+        }
+        
+        // Close existing connection if it exists
         if (this.websocket) {
+            // Mark that we're intentionally closing for a new connection
+            this.websocket.isIntentionalClose = true;
             this.websocket.close();
+            
+            // Small delay to ensure the previous connection is fully closed
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
         
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/chat/${conversationId}`;
         
+        console.log('Setting up WebSocket for conversation:', conversationId);
+        
+        // Create new WebSocket connection
         this.websocket = new WebSocket(wsUrl);
+        this.websocket.isIntentionalClose = false; // Track if this is an intentional close
+        
+        this.websocket.onopen = () => {
+            console.log('WebSocket connected successfully');
+            // Clear any pending error timeouts
+            if (this.websocketErrorTimeout) {
+                clearTimeout(this.websocketErrorTimeout);
+                this.websocketErrorTimeout = null;
+            }
+        };
         
         this.websocket.onmessage = (event) => {
             const data = JSON.parse(event.data);
@@ -238,6 +277,32 @@ class PyPoeApp {
         
         this.websocket.onerror = (error) => {
             console.error('WebSocket error:', error);
+            // Don't show error immediately - give it a chance to connect
+            this.websocketErrorTimeout = setTimeout(() => {
+                if (this.websocket && this.websocket.readyState !== WebSocket.OPEN && !this.websocket.isIntentionalClose) {
+                    this.enableInput();
+                    this.addMessage('❌ Connection error. Please try again.', 'error', false);
+                }
+            }, 2000);
+        };
+        
+        this.websocket.onclose = (event) => {
+            console.log('WebSocket closed:', event);
+            
+            // Clear any pending error timeouts
+            if (this.websocketErrorTimeout) {
+                clearTimeout(this.websocketErrorTimeout);
+                this.websocketErrorTimeout = null;
+            }
+            
+            // Only show error if it's not an intentional close and not a normal closure
+            if (!this.websocket.isIntentionalClose && event.code !== 1000) {
+                this.enableInput();
+                this.addMessage('❌ Connection lost. Please refresh the page.', 'error', false);
+            }
+            
+            // Re-enable input on WebSocket disconnect
+            this.enableInput();
         };
     }
     
@@ -311,11 +376,37 @@ class PyPoeApp {
                 }
                 this.currentBotMessage = null;
                 this.streamingContent = '';
-                this.messageInput.disabled = false;
-                this.sendBtn.disabled = false;
+                this.enableInput();
                 break;
             case 'error':
                 this.addMessage(data.content, 'error', false);
+                // Re-enable input on error responses
+                this.enableInput();
+                break;
+            case 'topic_updated':
+                // Update the conversation topic in the UI
+                console.log('Topic updated:', data);
+                if (data.conversation_id && data.topic) {
+                    // Update in conversations array
+                    const conv = this.conversations.find(c => c.id === data.conversation_id);
+                    if (conv) {
+                        conv.topic = data.topic;
+                        
+                        // Update sidebar if this conversation is visible
+                        const convElement = this.conversationsList.querySelector(`[data-id="${data.conversation_id}"]`);
+                        if (convElement) {
+                            const titleElement = convElement.querySelector('h4');
+                            if (titleElement) {
+                                titleElement.textContent = data.topic;
+                            }
+                        }
+                        
+                        // Update chat header if this is the current conversation
+                        if (this.currentConversationId === data.conversation_id) {
+                            this.currentChatTitle.textContent = data.topic;
+                        }
+                    }
+                }
                 break;
             default:
                 console.log('Unknown message type:', data.type);
@@ -422,18 +513,59 @@ class PyPoeApp {
         if (!message || !this.currentConversationId) return;
         
         this.messageInput.value = '';
-        this.messageInput.disabled = true;
-        this.sendBtn.disabled = true;
+        this.disableInput();
         
-        if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+        // Check WebSocket connection
+        if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+            this.addMessage('❌ Connection not available. Please refresh the page.', 'error', false);
+            this.enableInput();
+            return;
+        }
+        
+        try {
             this.websocket.send(JSON.stringify({
                 message: message,
                 bot_name: this.globalBotSelect ? this.globalBotSelect.value : 'GPT-3.5-Turbo'
             }));
+            
+            // Set timeout to re-enable input if no response comes
+            this.clearMessageTimeout();
+            this.messageTimeout = setTimeout(() => {
+                console.warn('Message timeout - re-enabling input');
+                this.addMessage('⏱️ Response timeout. Please try again.', 'error', false);
+                this.enableInput();
+            }, 60000); // 60 second timeout
+            
+        } catch (error) {
+            console.error('Error sending message:', error);
+            this.addMessage('❌ Failed to send message. Please try again.', 'error', false);
+            this.enableInput();
         }
         
         this.autoResizeTextarea();
     }
+    
+    disableInput() {
+        this.messageInput.disabled = true;
+        this.sendBtn.disabled = true;
+        this.messageInput.placeholder = 'Sending message...';
+    }
+    
+    enableInput() {
+        this.messageInput.disabled = false;
+        this.sendBtn.disabled = false;
+        this.messageInput.placeholder = 'Type your message here...';
+        this.clearMessageTimeout();
+    }
+    
+    clearMessageTimeout() {
+        if (this.messageTimeout) {
+            clearTimeout(this.messageTimeout);
+            this.messageTimeout = null;
+        }
+    }
+    
+
 
     lockBotSelector(lock = true, reason = '') {
         if (this.globalBotSelect) {
@@ -561,7 +693,7 @@ class PyPoeApp {
         this.conversationsList.innerHTML = filteredConversations.map(conv => `
             <div class="conversation-item" data-id="${conv.id}">
                 <div class="conversation-info">
-                    <h4>${this.escapeHtml(conv.title)}</h4>
+                    <h4>${conv.topic ? this.escapeHtml(conv.topic) : this.escapeHtml(conv.title)}</h4>
                     <p><i class="fas fa-robot"></i> ${this.escapeHtml(conv.bot_name)}</p>
                     <small>${conv.created_at}</small>
                 </div>
@@ -627,8 +759,8 @@ class PyPoeApp {
                     `;
                     this.currentChatTitle.textContent = 'Select or create a conversation';
                     this.currentBotName.textContent = 'Choose a chat mode and bot above to get started';
-                    this.messageInput.disabled = true;
-                    this.sendBtn.disabled = true;
+                    this.disableInput();
+                    this.messageInput.placeholder = 'Select a conversation to start chatting...';
                     
                     // Update locking logic for no active conversation
                     this.updateLockingLogic();
@@ -650,21 +782,8 @@ class PyPoeApp {
         const selectedMode = this.globalChatMode.value;
         console.log('Chat mode changed to:', selectedMode);
         
-        // Update mode description
-        const modeDescription = document.getElementById('mode-description');
-        if (modeDescription) {
-            const descriptions = {
-                'chatbot': 'Single AI assistant',
-                'group': 'Multiple AI assistants',
-                'debate': 'Two AIs debate a topic'
-            };
-            modeDescription.textContent = descriptions[selectedMode] || 'Unknown mode';
-        }
-        
-        // Update current bot name display to reflect the selected mode
-        if (!this.currentConversationId) {
-            this.currentBotName.textContent = `Mode: ${this.globalChatMode.options[this.globalChatMode.selectedIndex].text}`;
-        }
+        // Update the description under "Select or create a conversation"
+        this.updateCurrentBotDisplay();
     }
     
     updateSelectedBot() {
@@ -672,8 +791,21 @@ class PyPoeApp {
         const selectedBot = this.globalBotSelect.value;
         console.log('Bot changed to:', selectedBot);
         
+        // Update the description under "Select or create a conversation"
+        this.updateCurrentBotDisplay();
+    }
+    
+    updateCurrentBotDisplay() {
         if (!this.currentConversationId) {
-            this.currentBotName.textContent = `Bot: ${selectedBot}`;
+            const selectedBot = this.globalBotSelect.value;
+            const selectedMode = this.globalChatMode.value;
+            const descriptions = {
+                'chatbot': 'Single AI assistant',
+                'group': 'Multiple AI assistants',
+                'debate': 'Two AIs debate a topic'
+            };
+            const description = descriptions[selectedMode] || 'Unknown mode';
+            this.currentBotName.textContent = `Bot: ${selectedBot} | Mode: ${this.globalChatMode.options[this.globalChatMode.selectedIndex].text} (${description})`;
         }
     }
     
@@ -748,18 +880,51 @@ class PyPoeApp {
         
         let processedContent = this.escapeHtml(content);
         
-        // Convert markdown images to clickable links
+        // Convert videos first (more specific pattern)
+        const videoPattern = /!\[([^\]]*)\]\(([^)]*\.(?:mp4|mov|avi|webm|mkv|flv)[^)]*)\)/gi;
+        processedContent = processedContent.replace(videoPattern, (match, altText, url) => {
+            const displayText = altText || 'Generated Video';
+            return `<video controls style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" poster="" preload="metadata"><source src="${url}" type="video/mp4">Your browser does not support the video tag. <a href="${url}" target="_blank" class="video-fallback-link" style="color: #3498db; text-decoration: none;">🎬 ${displayText} (Click to open)</a></video>`;
+        });
+        
+        // Convert images (excluding videos that were already processed)
         const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
         return processedContent.replace(imagePattern, (match, altText, url) => {
             const displayText = altText || 'Generated Image';
-            return `<a href="${url}" target="_blank" class="image-link" title="Click to open image in new tab">🖼️ ${displayText}</a>`;
+            // Skip if this looks like a video URL that should have been caught by video pattern
+            if (/\.(mp4|mov|avi|webm|mkv|flv)/i.test(url)) {
+                return match; // Return original text
+            }
+            return `<img src="${url}" alt="${displayText}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';" /><a href="${url}" target="_blank" class="image-fallback-link" style="display: none; color: #3498db; text-decoration: none;">🖼️ ${displayText} (Click to open)</a>`;
         });
+    }
+    
+    cleanupWebSocket() {
+        // Clear any pending timeouts
+        if (this.websocketErrorTimeout) {
+            clearTimeout(this.websocketErrorTimeout);
+            this.websocketErrorTimeout = null;
+        }
+        
+        // Close WebSocket connection if it exists
+        if (this.websocket) {
+            this.websocket.isIntentionalClose = true;
+            this.websocket.close();
+            this.websocket = null;
+        }
     }
 }
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new PyPoeApp();
+    
+    // Clean up WebSocket when page is unloaded
+    window.addEventListener('beforeunload', () => {
+        if (window.app) {
+            window.app.cleanupWebSocket();
+        }
+    });
     
     // Handle new chat modal (keeping existing functionality)
     const newChatModal = document.getElementById('new-chat-modal');
@@ -797,6 +962,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (result.conversation_id) {
                     newChatModal.style.display = 'none';
                     newChatForm.reset();
+                    
+                    // Add a small delay to ensure conversation is fully saved
+                    await new Promise(resolve => setTimeout(resolve, 500));
                     
                     // Reload conversations and select the new one
                     await app.loadInitialData();

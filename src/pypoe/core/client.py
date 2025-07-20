@@ -5,21 +5,17 @@ from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Any, Optional
 import fastapi_poe as fp
 
-from ..config import get_config, Config
+from .config import get_config, Config
 
 # Add users directory to path for any user scripts
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "users"))
 
 try:
-    from .enhanced_history import EnhancedHistoryManager as HistoryManager
+    from .history import HistoryManager
     HISTORY_AVAILABLE = True
 except ImportError:
-    try:
-        from .history import HistoryManager
-        HISTORY_AVAILABLE = True
-    except ImportError:
-        HISTORY_AVAILABLE = False
-        HistoryManager = None
+    HISTORY_AVAILABLE = False
+    HistoryManager = None
 
 class ContentProcessor:
     """Utility class for processing and filtering API responses."""
@@ -28,6 +24,7 @@ class ContentProcessor:
         self.last_generating_message = ""
         self.generating_pattern = re.compile(r'^Generating\.+(\s*\(\d+s elapsed\))?$')
         self.image_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+        self.video_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]*\.(?:mp4|mov|avi|webm|mkv|flv)[^)]*)\)', re.IGNORECASE)
         
     def should_filter_chunk(self, text: str) -> bool:
         """Determine if a text chunk should be filtered out."""
@@ -48,27 +45,54 @@ class ContentProcessor:
         return False
     
     def process_content_for_display(self, content: str) -> str:
-        """Process content for display, converting images to clickable links."""
+        """Process content for display, converting images and videos to inline elements."""
         if not content:
             return content
-            
-        # Convert markdown images to clickable HTML links
+        
+        processed = content
+        
+        # Convert videos first (more specific pattern)
+        def replace_video(match):
+            alt_text = match.group(1) or "Generated Video"
+            url = match.group(2)
+            return f'<video controls style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" poster="" preload="metadata"><source src="{url}" type="video/mp4">Your browser does not support the video tag. <a href="{url}" target="_blank" class="video-fallback-link" style="color: #3498db; text-decoration: none;">🎬 {alt_text} (Click to open)</a></video>'
+        
+        processed = self.video_pattern.sub(replace_video, processed)
+        
+        # Convert images (excluding videos that were already processed)
         def replace_image(match):
             alt_text = match.group(1) or "Generated Image"
             url = match.group(2)
-            return f'<a href="{url}" target="_blank" class="image-link" title="Click to open image in new tab">🖼️ {alt_text}</a>'
+            # Skip if this looks like a video URL that should have been caught by video pattern
+            if any(ext in url.lower() for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']):
+                return match.group(0)  # Return original text
+            return f'<img src="{url}" alt="{alt_text}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" loading="lazy" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'inline-block\';" /><a href="{url}" target="_blank" class="image-fallback-link" style="display: none; color: #3498db; text-decoration: none;">🖼️ {alt_text} (Click to open)</a>'
         
-        processed = self.image_pattern.sub(replace_image, content)
+        processed = self.image_pattern.sub(replace_image, processed)
         return processed
     
     def extract_media_urls(self, content: str) -> List[Dict[str, str]]:
         """Extract media URLs from content for storage tracking."""
         media_urls = []
         
-        # Extract images
+        # Extract videos first (more specific pattern)
+        for match in self.video_pattern.finditer(content):
+            alt_text = match.group(1) or "Generated Video"
+            url = match.group(2)
+            media_urls.append({
+                'type': 'video',
+                'url': url,
+                'alt_text': alt_text,
+                'filename': self._extract_filename_from_url(url)
+            })
+        
+        # Extract images (excluding videos that were already processed)
         for match in self.image_pattern.finditer(content):
             alt_text = match.group(1) or "Generated Image"
             url = match.group(2)
+            # Skip if this looks like a video URL that should have been caught by video pattern
+            if any(ext in url.lower() for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']):
+                continue  # Skip this URL
             media_urls.append({
                 'type': 'image',
                 'url': url,
@@ -87,10 +111,16 @@ class ContentProcessor:
             if '.' in filename:
                 return filename
         
-        # Generate a fallback filename
+        # Generate a fallback filename based on URL content
         import hashlib
         url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-        return f"media_{url_hash}.png"
+        
+        # Check if this looks like a video URL
+        video_extensions = ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']
+        if any(ext in url.lower() for ext in video_extensions):
+            return f"video_{url_hash}.mp4"
+        else:
+            return f"image_{url_hash}.png"
 
 class PoeChatClient:
     """A high-level client for interacting with Poe.com using the official API."""
@@ -105,20 +135,15 @@ class PoeChatClient:
         self.content_processor = ContentProcessor()
         
         if self.enable_history:
-            # Setup media directory for enhanced history
+            # Setup media directory for history
             from pathlib import Path
             media_dir = Path(self.config.database_path).parent / "media"
             
-            # Check if we're using EnhancedHistoryManager or basic HistoryManager
-            if hasattr(HistoryManager, '__module__') and 'enhanced_history' in HistoryManager.__module__:
-                # Using EnhancedHistoryManager - pass media_dir
-                self.history = HistoryManager(
-                    db_path=str(self.config.database_path),
-                    media_dir=str(media_dir)
-                )
-            else:
-                # Using basic HistoryManager - only pass db_path
-                self.history = HistoryManager(db_path=str(self.config.database_path))
+            # Initialize HistoryManager with media support
+            self.history = HistoryManager(
+                db_path=str(self.config.database_path),
+                media_dir=str(media_dir)
+            )
             self._history_initialized = False
         else:
             self.history = None
@@ -233,7 +258,8 @@ class PoeChatClient:
             conversation_id = await self.history.create_conversation(
                 title=f"Chat with {bot_name}",
                 bot_name=bot_name,
-                chat_mode="chatbot"
+                chat_mode="chatbot",
+                topic=None  # Topic will be generated from first message if needed
             )
         
         # Save the user message to history
@@ -329,7 +355,8 @@ class PoeChatClient:
             conversation_id = await self.history.create_conversation(
                 title=f"Multi-turn chat with {bot_name}",
                 bot_name=bot_name,
-                chat_mode="chatbot"
+                chat_mode="chatbot",
+                topic=None  # Topic will be generated from first message if needed
             )
         
         # Reset content processor state for new request
@@ -455,14 +482,14 @@ class PoeChatClient:
             
             # === Image Generation Models ===
             "DALL-E-3",
-            "FLUX-pro-1.1-ultra",
-            "FLUX-pro-1.1",
-            "StableDiffusionXL",
-            "StableDiffusion3.5-L",
-            "Imagen-4-Ultra-Exp", # Google DeepMind
-            "Imagen-4",
-            "Imagen-4-Fast",
-            "Seedream-3.0",    # ByteDance, a bilingual model
+            # "FLUX-pro-1.1-ultra",
+            # "FLUX-pro-1.1",
+            # "Imagen-4-Ultra-Exp", # Google DeepMind
+            # "Imagen-4",
+            # "Imagen-4-Fast",
+            # "Seedream-3.0",    # ByteDance, a bilingual model
+            # "StableDiffusionXL",
+            # "StableDiffusion3.5-L",
             
             # === Video Generation Models ===
             "Runway-Gen-4-Turbo",
@@ -473,7 +500,7 @@ class PoeChatClient:
             "Seedance-1.0-Lite",
             
             # === Specialized Models ===
-            "Assistant",         # Poe's default assistant
+            #"Assistant",         # Poe's default assistant
         ]
 
     async def get_conversations(self) -> List[Dict[str, Any]]:
@@ -496,6 +523,151 @@ class PoeChatClient:
             return
         await self._ensure_history_initialized()
         await self.history.delete_conversation(conversation_id)
+
+    async def create_conversation(self, title: str, bot_name: str, chat_mode: str = "chatbot", topic: str = None) -> str:
+        """
+        Create a new conversation with optional topic.
+        
+        Args:
+            title: The conversation title
+            bot_name: The bot name for this conversation
+            chat_mode: The chat mode (chatbot, group, debate)
+            topic: Optional topic for the conversation
+            
+        Returns:
+            The conversation ID
+        """
+        if not self.enable_history:
+            raise ValueError("History is not enabled")
+        await self._ensure_history_initialized()
+        return await self.history.create_conversation(title, bot_name, chat_mode, topic)
+
+    async def generate_topic_from_message(self, first_message: str, bot_name: str = "GPT-4o-mini") -> str:
+        """
+        Generate a short topic (less than 5 words) from the first user message.
+        
+        Args:
+            first_message: The first message to generate a topic from
+            bot_name: The bot to use for topic generation (default: GPT-4o-mini)
+            
+        Returns:
+            A short topic string
+        """
+        try:
+            # Try multiple models in order of preference
+            models_to_try = ["GPT-4o-mini", "GPT-3.5-Turbo", "Claude-3.5-Sonnet"]
+            
+            for model in models_to_try:
+                try:
+                    # Use a fast model to generate the topic
+                    topic_prompt = f"Summarize this question/message in exactly 3-4 words (no more than 5 words): '{first_message}'"
+                    
+                    full_response = ""
+                    async for chunk in self.send_message(
+                        message=topic_prompt,
+                        bot_name=model,
+                        save_history=False  # Don't save this internal conversation
+                    ):
+                        full_response += chunk
+                    
+                    # Clean up the response - remove quotes, extra punctuation
+                    topic = full_response.strip().strip('"').strip("'").strip('.').strip()
+                    
+                    # Ensure it's not too long (max 5 words)
+                    words = topic.split()
+                    if len(words) > 5:
+                        topic = ' '.join(words[:5])
+                    
+                    if topic and topic.lower() not in ['error', 'failed', 'sorry', 'cannot']:
+                        print(f"✅ Generated topic using {model}: '{topic}'")
+                        return topic
+                        
+                except Exception as model_error:
+                    print(f"⚠️  Failed to generate topic with {model}: {model_error}")
+                    continue
+            
+            # If all models fail, use fallback
+            print("⚠️  All models failed for topic generation, using fallback")
+            return self._generate_fallback_topic(first_message)
+            
+        except Exception as e:
+            print(f"Warning: Failed to generate topic: {e}")
+            return self._generate_fallback_topic(first_message)
+
+    def _generate_fallback_topic(self, first_message: str) -> str:
+        """
+        Generate a simple fallback topic from the first message.
+        
+        Args:
+            first_message: The message to generate a topic from
+            
+        Returns:
+            A short topic string
+        """
+        try:
+            # Remove common words and punctuation
+            import re
+            cleaned_message = re.sub(r'[^\w\s]', '', first_message.lower())
+            
+            # Split into words and filter out common words
+            common_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may', 'might', 'must', 'shall', 'what', 'when', 'where', 'why', 'how', 'who', 'which', 'that', 'this', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'hello', 'hi', 'hey', 'please', 'help', 'thanks', 'thank'}
+            
+            words = [word for word in cleaned_message.split() if word not in common_words and len(word) > 2]
+            
+            # Take first 3-4 meaningful words
+            if words:
+                topic = ' '.join(words[:4])
+                return topic.title()  # Capitalize first letter of each word
+            
+            # If no meaningful words, use first few characters
+            if len(first_message) > 10:
+                return first_message[:15].strip().title()
+            else:
+                return first_message.strip().title()
+                
+        except Exception as e:
+            print(f"Warning: Fallback topic generation failed: {e}")
+            # Last resort: use first few words
+            words = first_message.split()[:3]
+            return ' '.join(words) if words else "Chat Topic"
+
+    async def update_conversation_topic(self, conversation_id: str, topic: str):
+        """
+        Update the topic of an existing conversation.
+        
+        Args:
+            conversation_id: The conversation ID to update
+            topic: The new topic for the conversation
+        """
+        if not self.enable_history:
+            raise ValueError("History is not enabled")
+        await self._ensure_history_initialized()
+        
+        import aiosqlite
+        async with self.history._lock:
+            async with aiosqlite.connect(self.history.db_path) as db:
+                await db.execute(
+                    "UPDATE conversations SET topic = ? WHERE id = ?",
+                    (topic, conversation_id)
+                )
+                await db.commit()
+
+    async def generate_and_update_topic(self, conversation_id: str, first_message: str, bot_name: str = "GPT-4o-mini"):
+        """
+        Generate a topic from the first message and update the conversation.
+        
+        Args:
+            conversation_id: The conversation ID to update
+            first_message: The first message to generate a topic from
+            bot_name: The bot to use for topic generation
+        """
+        try:
+            topic = await self.generate_topic_from_message(first_message, bot_name)
+            await self.update_conversation_topic(conversation_id, topic)
+            return topic
+        except Exception as e:
+            print(f"Failed to generate and update topic: {e}")
+            return None
 
     async def close(self):
         """Clean up resources."""

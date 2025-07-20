@@ -9,6 +9,7 @@ import os
 import sqlite3
 import requests
 from pathlib import Path
+from pypoe.core.config import get_config
 
 def check_environment():
     """Quick environment check"""
@@ -22,7 +23,7 @@ def check_environment():
     
     # Check Python path
     try:
-        from pypoe.config import get_config
+        from pypoe.core.config import get_config
         print("✅ PyPoe modules importable")
         return True
     except ImportError as e:
@@ -36,7 +37,7 @@ def check_config():
     print("-" * 30)
     
     try:
-        from pypoe.config import get_config
+        from pypoe.core.config import get_config
         config = get_config()
         print(f"Config loaded from: {config.config_path}")
         print(f"Database: {config.database_path}")

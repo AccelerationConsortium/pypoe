@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ conversation.title }} - PyPoe</title>
+    <title>{{ conversation.topic or conversation.title }} - PyPoe</title>
     <link rel="stylesheet" href="/static/style.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -245,7 +245,7 @@
     <div class="conversation-detail">
         <!-- Conversation Header -->
         <div class="conversation-header">
-            <h1 class="conversation-title">{{ conversation.title }}</h1>
+            <h1 class="conversation-title">{{ conversation.topic or conversation.title }}</h1>
             
             <div class="conversation-meta">
                 <div class="meta-item">
@@ -339,6 +339,7 @@
         function exportConversation(format) {
             const conversationData = {
                 title: {{ conversation.title | tojson }},
+                topic: {{ conversation.topic | tojson }},
                 bot_name: {{ conversation.bot_name | tojson }},
                 created_at: {{ conversation.created_at | tojson }},
                 messages: {{ messages | tojson }}
@@ -356,7 +357,7 @@
         }
         
         function generateTextExport(data) {
-            let text = `Conversation: ${data.title}\n`;
+            let text = `Conversation: ${data.topic || data.title}\n`;
             text += `Bot: ${data.bot_name}\n`;
             text += `Date: ${data.created_at}\n`;
             text += `Messages: ${data.messages.length}\n`;
@@ -410,7 +411,60 @@
             if (messagesList) {
                 messagesList.scrollTop = messagesList.scrollHeight;
             }
+            
+            // Process images in message content
+            processImagesInMessages();
         });
+        
+        function processImagesInMessages() {
+            const messageContents = document.querySelectorAll('.message-content');
+            messageContents.forEach(contentDiv => {
+                const content = contentDiv.textContent;
+                const processedContent = processContentForDisplay(content);
+                if (processedContent !== content) {
+                    contentDiv.innerHTML = processedContent;
+                    
+                    // Add click handlers to images
+                    const images = contentDiv.querySelectorAll('img');
+                    images.forEach(img => {
+                        img.style.cursor = 'pointer';
+                        img.onclick = function() {
+                            window.open(this.src, '_blank');
+                        };
+                    });
+                }
+            });
+        }
+        
+        function processContentForDisplay(content) {
+            if (!content) return content;
+            
+            let processedContent = escapeHtml(content);
+            
+            // Convert videos first (more specific pattern)
+            const videoPattern = /!\[([^\]]*)\]\(([^)]*\.(?:mp4|mov|avi|webm|mkv|flv)[^)]*)\)/gi;
+            processedContent = processedContent.replace(videoPattern, (match, altText, url) => {
+                const displayText = altText || 'Generated Video';
+                return `<video controls style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" poster="" preload="metadata"><source src="${url}" type="video/mp4">Your browser does not support the video tag. <a href="${url}" target="_blank" class="video-fallback-link" style="color: #3498db; text-decoration: none;">🎬 ${displayText} (Click to open)</a></video>`;
+            });
+            
+            // Convert images (excluding videos that were already processed)
+            const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
+            return processedContent.replace(imagePattern, (match, altText, url) => {
+                const displayText = altText || 'Generated Image';
+                // Skip if this looks like a video URL that should have been caught by video pattern
+                if (/\.(mp4|mov|avi|webm|mkv|flv)/i.test(url)) {
+                    return match; // Return original text
+                }
+                return `<img src="${url}" alt="${displayText}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';" /><a href="${url}" target="_blank" class="image-fallback-link" style="display: none; color: #3498db; text-decoration: none;">🖼️ ${displayText} (Click to open)</a>`;
+            });
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
     </script>
 
     <!-- Status Bar -->

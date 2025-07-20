@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 
 try:
-    from pypoe import get_config
+    from pypoe.core.config import get_config
     from pypoe.interfaces.web.app import run_server
     from pypoe.interfaces.web import WEB_AVAILABLE
 except ImportError as e:

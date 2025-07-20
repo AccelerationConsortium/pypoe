@@ -212,6 +212,29 @@ body {
     font-weight: 600;
 }
 
+.conversation-topic {
+    margin: 2px 0 5px 0;
+    font-size: 0.75rem;
+    color: #3498db;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    background: rgba(52, 152, 219, 0.1);
+    padding: 2px 6px;
+    border-radius: 8px;
+    width: fit-content;
+    max-width: 180px;
+    font-weight: 500;
+}
+
+.conversation-topic i {
+    font-size: 0.7rem;
+    opacity: 0.8;
+}
+
 .conversation-info p {
     font-size: 0.85rem;
     opacity: 0.8;
@@ -291,15 +314,6 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
-}
-
-.mode-description {
-    font-size: 0.75rem;
-    color: #7f8c8d;
-    font-style: italic;
-    padding: 2px 0;
-    transition: color 0.3s ease;
-    min-height: 16px;
 }
 
 /* Enhanced hover effects for better UX */
@@ -713,6 +727,89 @@ body {
     margin: 6px 0;
 }
 
+/* Inline Images in Messages */
+.message-content img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    margin: 8px 0;
+    display: block;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    border: 1px solid #e0e0e0;
+    background: #f9f9f9;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.message-content img:hover {
+    transform: scale(1.02);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    cursor: pointer;
+}
+
+/* Inline Videos in Messages */
+.message-content video {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    margin: 8px 0;
+    display: block;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    border: 1px solid #e0e0e0;
+    background: #f9f9f9;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.message-content video:hover {
+    transform: scale(1.01);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+/* Video controls styling */
+.message-content video::-webkit-media-controls-panel {
+    background-color: rgba(0, 0, 0, 0.7);
+}
+
+/* Fallback link for failed images */
+.image-fallback-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white !important;
+    text-decoration: none;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin: 4px 0;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.image-fallback-link:hover {
+    background: linear-gradient(135deg, #c0392b, #a93226);
+    text-decoration: none;
+}
+
+/* Fallback link for failed videos */
+.video-fallback-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(135deg, #9b59b6, #8e44ad);
+    color: white !important;
+    text-decoration: none;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin: 4px 0;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.video-fallback-link:hover {
+    background: linear-gradient(135deg, #8e44ad, #7d3c98);
+    text-decoration: none;
+}
 
 
 /* Input Area */

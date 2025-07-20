@@ -312,7 +312,7 @@ Run the Slack bot as a background service:
 nohup pypoe slack-bot --enable-history > ~/pypoe-slack.log 2>&1 &
 
 # Method 2: Using the daemon script pattern
-# (Create similar script based on users/setup/run_pypoe_daemon.py)
+# (Create similar script based on src/pypoe/scripts/setup/run_pypoe_daemon.py)
 
 # Check if running
 ps aux | grep "pypoe slack-bot"
@@ -490,13 +490,17 @@ pytest tests/test_client.py -v
 ```
 pypoe/
 ├── src/pypoe/
-│   ├── cli.py              # Command line interface
-│   ├── config.py           # Configuration management
-│   ├── core/               # Core Poe API client
+│   ├── core/               # Core functionality
+│   │   ├── cli.py         # Command line interface
+│   │   ├── config.py      # Configuration management
+│   │   ├── client.py      # Core Poe API client
+│   │   ├── history.py     # Conversation history manager
+│   │   └── logging_db.py  # Database logging utilities
 │   ├── interfaces/         # Web and Slack interfaces
 │   │   ├── web/           # Web interface (FastAPI)
-│   │   └── slack/         # Slack bot integration
-│   ├── scripts/           # User examples and setup utilities
+│   │   ├── slack/         # Slack bot integration
+│   │   └── cli/           # CLI interface application
+│   ├── scripts/           # Setup utilities and examples
 │   └── docs/              # Documentation files
 ├── users/                 # User data and history
 │   └── history/          # Shared conversation database

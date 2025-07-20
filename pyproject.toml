@@ -61,7 +61,7 @@ dev = [
 ]
 
 [project.scripts]
-pypoe = "pypoe.cli:main"
+pypoe = "pypoe.core.cli:run"
 
 [project.urls]
 Homepage = "https://github.com/your-username/pypoe"

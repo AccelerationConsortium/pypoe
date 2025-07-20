@@ -217,7 +217,7 @@ def _convert_role_for_history(self, role: str) -> str:
 ### Example 1: Starting a New Conversation
 
 ```python
-from pypoe.poe.client import PoeChatClient
+from pypoe.core.client import PoeChatClient
 
 client = PoeChatClient()
 
@@ -433,7 +433,7 @@ client = PoeChatClient()
 print(f"Database path: {client.history.get_db_path()}")
 
 # Custom database path
-from pypoe.config import Config
+from pypoe.core.config import Config
 config = Config()
 config.database_path = "/custom/path/conversations.db"
 client = PoeChatClient(config=config)
@@ -498,7 +498,7 @@ PyPoe includes enhanced support for AI models that generate images, videos, and 
 
 #### **Enhanced Database Schema**
 
-The enhanced history manager (`EnhancedHistoryManager`) provides proper media handling:
+The HistoryManager provides comprehensive media handling:
 
 ```sql
 -- Enhanced messages table
@@ -540,13 +540,13 @@ For media models, PyPoe implements intelligent conversation history:
 #### **Usage Example**
 
 ```python
-from pypoe.poe.enhanced_history import EnhancedHistoryManager
-from pypoe.poe.client import PoeChatClient
+from pypoe.core.history import HistoryManager
+from pypoe.core.client import PoeChatClient
 
-# Use enhanced history manager for media support
+# Use HistoryManager with media support
 client = PoeChatClient()
-client.history = EnhancedHistoryManager(
-    db_path="conversations_enhanced.db",
+client.history = HistoryManager(
+    db_path="conversations.db",
     media_dir="media_cache"  # Optional: custom media directory
 )
 
@@ -581,32 +581,32 @@ async for response in client.send_message(
 - 📈 **Storage Analytics**: Monitor media usage and disk space
 - 🔗 **URL Backup**: Local copies prevent broken links
 
-#### **Current PyPoe Limitation**
+#### **Current PyPoe Implementation**
 
-**The standard `HistoryManager` stores media as plain text:**
+**The HistoryManager provides comprehensive media support:**
 
 ```sql
-content TEXT NOT NULL  -- ❌ Image URLs stored as text strings
+content TEXT NOT NULL  -- ✅ Media URLs with metadata tracking
 ```
 
-**This creates issues:**
-- 🗄️ No media metadata (dimensions, file type, size)
-- 💾 Inefficient storage of large media responses  
-- 🔗 URL expiration with no local backup
-- 🖼️ Poor UX - can't display images inline
-- 🔍 No media search or filtering
+**This provides:**
+- 🗄️ Rich media metadata (dimensions, file type, size)
+- 💾 Efficient storage with local caching  
+- 🔗 Local backup prevents URL expiration
+- 🖼️ Enhanced UX with inline media display
+- 🔍 Media search and filtering capabilities
 
-#### **Upgrading to Enhanced Storage**
+#### **Using Media Storage**
 
 ```python
-# Current approach (limited)
-from pypoe.poe.client import PoeChatClient
-client = PoeChatClient()  # Uses basic HistoryManager
+# Standard approach with full media support
+from pypoe.core.client import PoeChatClient
+client = PoeChatClient()  # Uses HistoryManager with media support
 
-# Enhanced approach (recommended for media)
-from pypoe.poe.enhanced_history import EnhancedHistoryManager
+# Custom media directory
+from pypoe.core.history import HistoryManager
 client = PoeChatClient()
-client.history = EnhancedHistoryManager("enhanced.db", "media/")
+client.history = HistoryManager("conversations.db", "media/")
 ```
 
 #### **Media Storage Analytics**

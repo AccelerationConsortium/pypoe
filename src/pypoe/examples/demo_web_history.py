@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 from pypoe.core.client import PoeChatClient
-from pypoe.config import get_config
+from pypoe.core.config import get_config
 
 async def demonstrate_conversation_history():
     """Demonstrate conversation history features."""

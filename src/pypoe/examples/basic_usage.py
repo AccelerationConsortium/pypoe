@@ -3,6 +3,8 @@ import sys
 import os
 
 from pypoe import PoeChatClient, HistoryManager
+from pypoe.core.config import get_config
+from pathlib import Path
 
 async def main():
     """
@@ -56,8 +58,6 @@ async def main():
         
         # Demonstrate direct HistoryManager usage
         print("\nDemonstrating direct HistoryManager usage...")
-        from pypoe.config import get_config
-        from pathlib import Path
         
         config = get_config()
         media_dir = Path(config.database_path).parent / "media"

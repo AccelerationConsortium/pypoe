@@ -105,7 +105,7 @@
         <div class="conversations-grid">
             {% for conversation in conversations %}
             <div class="conversation-card">
-                <h3>{{ conversation.title }}</h3>
+                <h3>{{ conversation.topic or conversation.title }}</h3>
                 <p><i class="fas fa-robot"></i> {{ conversation.bot_name }}</p>
                 <p><i class="fas fa-message"></i> {{ conversation.message_count }} messages</p>
                 <p><i class="fas fa-clock"></i> {{ conversation.created_at }}</p>

@@ -121,7 +121,7 @@ class HistoryManager:
             await db.commit()
         
         return conversation_id
-
+    
     async def create_conversation(self, title: str, bot_name: str = None, chat_mode: str = "chatbot") -> str:
         """
         Create a new conversation and return its ID (compatibility method).

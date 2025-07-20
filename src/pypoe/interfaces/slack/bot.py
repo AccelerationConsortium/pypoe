@@ -36,8 +36,8 @@ except ImportError:
     SlackApiError = Exception
 
 from ...core.client import PoeChatClient
-from ...core.enhanced_history import EnhancedHistoryManager
-from ...config import get_config
+from ...core.history import HistoryManager
+from ...core.config import get_config
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -159,13 +159,13 @@ class PyPoeSlackBot:
             signing_secret=os.environ.get("SLACK_SIGNING_SECRET")
         )
         
-        # Initialize PyPoe client with Enhanced History Manager
+        # Initialize PyPoe client
         self.config = get_config()
         self.poe_client = PoeChatClient(enable_history=False)  # We'll handle history ourselves
         
-        # Use Enhanced History Manager for persistent storage
+        # Use HistoryManager for persistent storage
         if enable_history:
-            self.history = EnhancedHistoryManager(
+            self.history = HistoryManager(
                 db_path=str(self.config.database_path), 
                 media_dir=str(self.config.database_path.parent / "slack_media")
             )
@@ -900,7 +900,7 @@ async def main():
     print(f"   POE_API_KEY: {'✅ Set' if os.environ.get('POE_API_KEY') else '❌ Missing'}")
     print(f"   SLACK_BOT_TOKEN: {'✅ Set' if os.environ.get('SLACK_BOT_TOKEN') else '❌ Missing'}")
     print(f"   Socket Mode: {os.environ.get('SLACK_SOCKET_MODE', 'true')}")
-    print("   Database: Enhanced History Manager with media support")
+    print("   Database: HistoryManager with media support")
     print("   Conversation Strategy: Individual contexts per user")
     print("   Context Management: Intelligent truncation with model-specific limits")
     
