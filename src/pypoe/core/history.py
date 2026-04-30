@@ -3,11 +3,13 @@ import asyncio
 import uuid
 import json
 import hashlib
-import aiohttp
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 from urllib.parse import urlparse
 import re
+
+# ``aiohttp`` is only required when media auto-download is enabled. Import it
+# lazily inside ``_download_media`` so chat-only deploys don't need the extra.
 
 class MediaResponse:
     """Represents a media response from an AI model."""
@@ -40,19 +42,28 @@ class MediaResponse:
         )
 
 class HistoryManager:
-    """History manager with media support and conversation management."""
+    """History manager with optional media support and conversation management."""
 
-    def __init__(self, db_path: str, media_dir: Optional[str] = None):
+    def __init__(
+        self,
+        db_path: str,
+        media_dir: Optional[str] = None,
+        enable_media: bool = False,
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Media storage directory
+
+        self.enable_media = enable_media
+
+        # Media storage directory (created lazily so chat-only deployments
+        # don't litter the filesystem with an unused directory).
         if media_dir:
             self.media_dir = Path(media_dir)
         else:
             self.media_dir = self.db_path.parent / "media"
-        self.media_dir.mkdir(parents=True, exist_ok=True)
-        
+        if self.enable_media:
+            self.media_dir.mkdir(parents=True, exist_ok=True)
+
         self._lock = asyncio.Lock()
         
         # Media model patterns (models that generate media content)
@@ -126,42 +137,64 @@ class HistoryManager:
                 await db.commit()
 
     async def _migrate_basic_to_enhanced(self, db):
-        """Migrate existing basic database schema to enhanced schema."""
+        """Migrate existing basic database schema to enhanced schema.
+
+        Each ALTER runs in its own try/except so that one failure (for
+        example, SQLite refusing a non-constant DEFAULT) doesn't block the
+        rest of the migration.
+        """
+
+        async def _column_names(table: str):
+            cursor = await db.execute(f"PRAGMA table_info({table})")
+            return [col[1] for col in await cursor.fetchall()]
+
+        async def _add_column(sql: str, label: str):
+            try:
+                await db.execute(sql)
+                print(f"✅ {label}")
+            except Exception as exc:
+                print(f"⚠️  Skipping {label}: {exc}")
+
         try:
-            # Check if conversations table needs migration
-            cursor = await db.execute("PRAGMA table_info(conversations)")
-            columns = await cursor.fetchall()
-            column_names = [col[1] for col in columns]
-            
-            # Add missing columns to conversations table
-            if 'chat_mode' not in column_names:
-                await db.execute("ALTER TABLE conversations ADD COLUMN chat_mode TEXT DEFAULT 'chatbot'")
-                print("✅ Added chat_mode column to conversations table")
-            
-            if 'updated_at' not in column_names:
-                await db.execute("ALTER TABLE conversations ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
-                print("✅ Added updated_at column to conversations table")
-            
-            if 'topic' not in column_names:
-                await db.execute("ALTER TABLE conversations ADD COLUMN topic TEXT")
-                print("✅ Added topic column to conversations table")
-            
-            # Check if messages table needs migration
-            cursor = await db.execute("PRAGMA table_info(messages)")
-            columns = await cursor.fetchall()
-            column_names = [col[1] for col in columns]
-            
-            # Add missing columns to messages table
-            if 'content_type' not in column_names:
-                await db.execute("ALTER TABLE messages ADD COLUMN content_type TEXT DEFAULT 'text'")
-                print("✅ Added content_type column to messages table")
-            
-            if 'media_data' not in column_names:
-                await db.execute("ALTER TABLE messages ADD COLUMN media_data TEXT")
-                print("✅ Added media_data column to messages table")
-            
-            print("🔄 Database migration to enhanced schema completed successfully")
-            
+            conv_cols = await _column_names("conversations")
+
+            if 'chat_mode' not in conv_cols:
+                await _add_column(
+                    "ALTER TABLE conversations ADD COLUMN chat_mode TEXT DEFAULT 'chatbot'",
+                    "Added chat_mode column to conversations table",
+                )
+
+            if 'updated_at' not in conv_cols:
+                # SQLite forbids non-constant defaults on ALTER TABLE, so we
+                # leave existing rows as NULL; the CURRENT_TIMESTAMP default
+                # in CREATE TABLE only applies to brand-new tables anyway.
+                await _add_column(
+                    "ALTER TABLE conversations ADD COLUMN updated_at DATETIME",
+                    "Added updated_at column to conversations table",
+                )
+
+            if 'topic' not in conv_cols:
+                await _add_column(
+                    "ALTER TABLE conversations ADD COLUMN topic TEXT",
+                    "Added topic column to conversations table",
+                )
+
+            msg_cols = await _column_names("messages")
+
+            if 'content_type' not in msg_cols:
+                await _add_column(
+                    "ALTER TABLE messages ADD COLUMN content_type TEXT DEFAULT 'text'",
+                    "Added content_type column to messages table",
+                )
+
+            if 'media_data' not in msg_cols:
+                await _add_column(
+                    "ALTER TABLE messages ADD COLUMN media_data TEXT",
+                    "Added media_data column to messages table",
+                )
+
+            print("🔄 Database migration to enhanced schema completed")
+
         except Exception as e:
             print(f"⚠️  Database migration warning: {e}")
             # Continue anyway - the tables should still work for basic functionality
@@ -220,18 +253,24 @@ class HistoryManager:
     async def _download_media(self, url: str, media_type: str) -> Optional[Dict[str, Any]]:
         """Download media file and return metadata."""
         try:
+            # Lazy import so chat-only deployments don't need aiohttp installed.
+            import aiohttp
+
+            # Ensure the target directory exists (only when we actually download).
+            self.media_dir.mkdir(parents=True, exist_ok=True)
+
             # Create hash-based filename
             url_hash = hashlib.md5(url.encode()).hexdigest()
             parsed_url = urlparse(url)
-            
+
             # Determine file extension
             path_ext = Path(parsed_url.path).suffix
             if not path_ext:
                 path_ext = '.jpg' if media_type == 'image' else '.mp4'
-            
+
             local_filename = f"{url_hash}{path_ext}"
             local_path = self.media_dir / local_filename
-            
+
             # Skip if already downloaded
             if local_path.exists():
                 return {
@@ -239,7 +278,7 @@ class HistoryManager:
                     'file_hash': url_hash,
                     'file_size': local_path.stat().st_size
                 }
-            
+
             # Download file
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
@@ -280,41 +319,49 @@ class HistoryManager:
                 await db.commit()
         return conversation_id
 
-    async def add_message(self, 
-                         conversation_id: str, 
-                         role: str, 
+    async def add_message(self,
+                         conversation_id: str,
+                         role: str,
                          content: str,
                          bot_name: Optional[str] = None,
                          download_media: bool = True) -> int:
-        """Adds a message with enhanced media handling."""
-        
-        # Detect media content
-        media_info = self._detect_media_content(content, bot_name or "")
-        
+        """Adds a message, with optional media auto-download.
+
+        Media detection and downloading are skipped when ``self.enable_media``
+        is False (the default) or the caller passes ``download_media=False``.
+        The raw text content is always persisted.
+        """
+
+        # Detect media content only when the instance is configured for it.
+        if self.enable_media:
+            media_info = self._detect_media_content(content, bot_name or "")
+        else:
+            media_info = {'has_media': False, 'content_type': 'text'}
+
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
                 # Insert message
                 cursor = await db.execute("""
-                    INSERT INTO messages (conversation_id, role, content, content_type, media_data) 
+                    INSERT INTO messages (conversation_id, role, content, content_type, media_data)
                     VALUES (?, ?, ?, ?, ?)
                 """, (
-                    conversation_id, 
-                    role, 
+                    conversation_id,
+                    role,
                     content,
                     media_info['content_type'],
                     json.dumps(media_info) if media_info['has_media'] else None
                 ))
-                
+
                 message_id = cursor.lastrowid
-                
-                # Download and store media files if present
-                if media_info['has_media'] and download_media:
+
+                # Download and store media files when enabled and requested.
+                if self.enable_media and media_info['has_media'] and download_media:
                     for url in media_info.get('urls', []):
                         media_metadata = await self._download_media(url, media_info.get('media_type', 'image'))
-                        
+
                         if media_metadata:
                             await db.execute("""
-                                INSERT INTO media_files 
+                                INSERT INTO media_files
                                 (message_id, file_hash, original_url, local_path, media_type, file_size)
                                 VALUES (?, ?, ?, ?, ?, ?)
                             """, (
@@ -325,7 +372,7 @@ class HistoryManager:
                                 media_info.get('media_type', 'unknown'),
                                 media_metadata['file_size']
                             ))
-                
+
                 await db.commit()
                 return message_id
 

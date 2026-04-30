@@ -29,15 +29,23 @@ try:
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.errors import SlackApiError
     SLACK_AVAILABLE = True
-except ImportError:
+    SLACK_IMPORT_ERROR = None
+except ImportError as exc:
     SLACK_AVAILABLE = False
     AsyncApp = None
     AsyncSocketModeHandler = None
     SlackApiError = Exception
+    SLACK_IMPORT_ERROR = exc
 
 from ...core.client import PoeChatClient
 from ...core.history import HistoryManager
 from ...core.config import get_config
+from ...core.models import (
+    CHAT_MODELS,
+    DEFAULT_CHAT_MODEL,
+    format_model_price_marker,
+    get_model_price_markers,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -50,7 +58,7 @@ class SlackConversationContext:
     channel_id: str
     channel_type: str  # 'im', 'public_channel', 'private_channel', 'group'
     chat_mode: str     # 'slack_dm', 'slack_channel_shared', 'slack_channel_individual'
-    preferred_model: str = "GPT-3.5-Turbo"
+    preferred_model: str = DEFAULT_CHAT_MODEL
     last_activity: datetime = None
     max_context_messages: int = 50  # Default message limit
     max_context_tokens: int = 12000  # Default token limit (conservative)
@@ -60,33 +68,14 @@ class SlackConversationContext:
             self.last_activity = datetime.now()
 
 class PoeBotUsageTracker:
-    """Track usage statistics and compute point estimates"""
+    """Track usage statistics."""
     
     def __init__(self):
         self.usage_data = {}
-        self.model_costs = {
-            # Estimated compute points per message (these are estimates)
-            "GPT-3.5-Turbo": 1,
-            "GPT-4": 5,
-            "GPT-4-Turbo": 3,
-            "GPT-4o": 4,
-            "Claude-3-Haiku": 1,
-            "Claude-3-Sonnet": 3,
-            "Claude-3-Opus": 8,
-            "Claude-3.5-Sonnet": 4,
-            "Llama-3-70B-Instruct": 2,
-            "Llama-3-8B-Instruct": 1,
-            "Gemini-Pro": 2,
-            "PaLM-2": 2,
-        }
     
     def estimate_tokens(self, text: str) -> int:
         """Rough token estimation (1 token ≈ 4 characters)"""
         return len(text) // 4
-    
-    def get_model_cost(self, model: str) -> int:
-        """Get estimated compute points for a model"""
-        return self.model_costs.get(model, 3)  # Default to 3 if unknown
     
     def track_usage(self, user_id: str, model: str, input_text: str, output_text: str):
         """Track usage for a user"""
@@ -95,7 +84,6 @@ class PoeBotUsageTracker:
                 "total_messages": 0,
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
-                "estimated_compute_points": 0,
                 "models_used": {},
                 "daily_usage": {},
             }
@@ -105,13 +93,10 @@ class PoeBotUsageTracker:
         
         input_tokens = self.estimate_tokens(input_text)
         output_tokens = self.estimate_tokens(output_text)
-        compute_points = self.get_model_cost(model)
-        
         # Update totals
         user_data["total_messages"] += 1
         user_data["total_input_tokens"] += input_tokens
         user_data["total_output_tokens"] += output_tokens
-        user_data["estimated_compute_points"] += compute_points
         
         # Update model usage
         if model not in user_data["models_used"]:
@@ -121,7 +106,7 @@ class PoeBotUsageTracker:
         # Update daily usage
         if today not in user_data["daily_usage"]:
             user_data["daily_usage"][today] = 0
-        user_data["daily_usage"][today] += compute_points
+        user_data["daily_usage"][today] += 1
     
     def get_user_stats(self, user_id: str) -> Dict[str, Any]:
         """Get usage statistics for a user"""
@@ -130,7 +115,6 @@ class PoeBotUsageTracker:
                 "total_messages": 0,
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
-                "estimated_compute_points": 0,
                 "models_used": {},
                 "today_usage": 0,
             }
@@ -165,9 +149,12 @@ class PyPoeSlackBot:
         
         # Use HistoryManager for persistent storage
         if enable_history:
+            from pathlib import Path
+            db_path = Path(self.config.database_path)
             self.history = HistoryManager(
-                db_path=str(self.config.database_path), 
-                media_dir=str(self.config.database_path.parent / "slack_media")
+                db_path=str(db_path),
+                media_dir=str(db_path.parent / "slack_media"),
+                enable_media=self.config.enable_media,
             )
         else:
             self.history = None
@@ -182,26 +169,21 @@ class PyPoeSlackBot:
         # Model-specific context limits
         self.model_context_limits = {
             # OpenAI Models
-            "GPT-3.5-Turbo": {"max_tokens": 12000, "max_messages": 40},
-            "GPT-4": {"max_tokens": 100000, "max_messages": 200},
-            "GPT-4o": {"max_tokens": 100000, "max_messages": 200},
-            "GPT-4o-mini": {"max_tokens": 100000, "max_messages": 200},
-            "o1-preview": {"max_tokens": 100000, "max_messages": 200},
-            "o1-mini": {"max_tokens": 100000, "max_messages": 200},
+            "GPT-5.5": {"max_tokens": 100000, "max_messages": 200},
+            "GPT-5.5-Pro": {"max_tokens": 100000, "max_messages": 200},
             "GPT-4-Turbo": {"max_tokens": 100000, "max_messages": 200},
-            
-            # Anthropic Models  
-            "Claude-3-Opus": {"max_tokens": 150000, "max_messages": 300},
-            "Claude-3-Sonnet": {"max_tokens": 150000, "max_messages": 300},
-            "Claude-3-Haiku": {"max_tokens": 150000, "max_messages": 300},
-            "Claude-3.5-Sonnet": {"max_tokens": 150000, "max_messages": 300},
-            "Claude-3.5-Haiku": {"max_tokens": 150000, "max_messages": 300},
-            
+
+            # Anthropic Models
+            "Claude-Opus-4.7": {"max_tokens": 150000, "max_messages": 300},
+            "Claude-Sonnet-4.6": {"max_tokens": 150000, "max_messages": 300},
+
             # Google Models
-            "Gemini-1.5-Pro": {"max_tokens": 800000, "max_messages": 500},
-            "Gemini-1.5-Flash": {"max_tokens": 800000, "max_messages": 500},
-            "Gemini-2.0-Flash": {"max_tokens": 800000, "max_messages": 500},
-            
+            "Gemini-3.1-Pro": {"max_tokens": 800000, "max_messages": 500},
+            "Gemini-3-Flash": {"max_tokens": 800000, "max_messages": 500},
+
+            # xAI Models
+            "Grok-4": {"max_tokens": 100000, "max_messages": 200},
+
             # Other Models - Conservative defaults
             "Default": {"max_tokens": 12000, "max_messages": 40}
         }
@@ -218,7 +200,7 @@ class PyPoeSlackBot:
             logger.info(f"✅ Initialized with {len(self.available_models)} available models")
         except Exception as e:
             logger.error(f"❌ Failed to initialize: {e}")
-            self.available_models = ["GPT-3.5-Turbo", "Claude-3-Haiku"]  # Fallback
+            self.available_models = list(CHAT_MODELS)
     
     def _determine_conversation_strategy(self, channel_type: str, user_id: str, channel_id: str) -> tuple[str, str, str]:
         """
@@ -275,7 +257,7 @@ class PyPoeSlackBot:
                     # Create new conversation in database
                     await self.history.create_conversation(
                         title=title,
-                        bot_name="GPT-3.5-Turbo",  # Default model
+                        bot_name=DEFAULT_CHAT_MODEL,
                         chat_mode=chat_mode
                     )
                     # Note: We use our own conversation_id instead of the returned UUID
@@ -323,13 +305,24 @@ class PyPoeSlackBot:
         channel_id = command["channel_id"]
         channel_type = command.get("channel_type", "unknown")
         text = command.get("text", "").strip()
+
+        async def respond_in_channel(message):
+            """Publish slash-command output into Slack history."""
+            if isinstance(message, dict):
+                payload = {"response_type": "in_channel", **message}
+            else:
+                payload = {"response_type": "in_channel", "text": message}
+            await respond(payload)
         
         try:
+            command_text = f"/poe {text}".strip()
+            await respond_in_channel(f"📝 <@{user_id}> ran `{command_text}`")
+
             # Get conversation context
             context = await self._get_or_create_conversation_context(user_id, channel_id, channel_type)
             
             if not text or text == "help":
-                await respond(self._get_help_message(context))
+                await respond_in_channel(self._get_help_message(context))
                 return
             
             parts = text.split(" ", 1)
@@ -337,38 +330,38 @@ class PyPoeSlackBot:
             args = parts[1] if len(parts) > 1 else ""
             
             if cmd == "models":
-                await respond(self._get_models_message())
+                await respond_in_channel(self._get_models_message())
             
             elif cmd == "set-model":
                 if not args:
-                    await respond("❌ Please specify a model. Use `/poe models` to see available options.")
+                    await respond_in_channel("❌ Please specify a model. Use `/poe models` to see available options.")
                     return
-                await self._set_user_model(context, args, respond)
+                await self._set_user_model(context, args, respond_in_channel)
             
             elif cmd == "chat":
                 if not args:
-                    await respond("❌ Please provide a message. Example: `/poe chat Hello!`")
+                    await respond_in_channel("❌ Please provide a message. Example: `/poe chat Hello!`")
                     return
-                await self._handle_chat_message(context, args, respond)
+                await self._handle_chat_message(context, args, respond_in_channel)
             
             elif cmd == "usage":
-                await respond(self._get_usage_message(user_id))
+                await respond_in_channel(self._get_usage_message(user_id))
             
             elif cmd == "reset":
-                await self._reset_conversation(context, respond)
+                await self._reset_conversation(context, respond_in_channel)
             
             elif cmd == "context":
-                await respond(self._get_context_info(context))
+                await respond_in_channel(self._get_context_info(context))
             
             elif cmd == "stats":
-                await respond(await self._get_context_stats(context))
+                await respond_in_channel(await self._get_context_stats(context))
             
             else:
-                await respond(f"❌ Unknown command: `{cmd}`. Use `/poe help` for available commands.")
+                await respond_in_channel(f"❌ Unknown command: `{cmd}`. Use `/poe help` for available commands.")
         
         except Exception as e:
             logger.error(f"Error handling command: {e}")
-            await respond(f"❌ Error: {str(e)}")
+            await respond_in_channel(f"❌ Error: {str(e)}")
     
     async def _handle_mention(self, event, say):
         """Handle @poe_bot mentions in channels"""
@@ -509,10 +502,9 @@ class PyPoeSlackBot:
         context.preferred_model = matched_model
         self._update_context_limits_for_model(context)
         
-        cost = self.usage_tracker.get_model_cost(matched_model)
         await respond_func(
             f"✅ Model changed from **{old_model}** to **{matched_model}**\n"
-            f"💰 Estimated cost: {cost} compute points per message\n"
+            f"💰 Price marker: {format_model_price_marker(matched_model)}\n"
             f"📍 Context: {context.chat_mode}"
         )
     
@@ -659,7 +651,7 @@ class PyPoeSlackBot:
 • Send direct messages to the bot
 
 **Features:**
-• 🧠 Access to 100+ AI models (GPT-4, Claude, Gemini, etc.)
+• 🧠 Access to the configured chat-only Poe models
 • 💬 Multi-turn conversations with persistent context
 • 📊 Usage tracking and compute point monitoring
 • 🔄 Model switching mid-conversation
@@ -676,6 +668,15 @@ class PyPoeSlackBot:
         """Get available models message"""
         if not self.available_models:
             return "❌ No models available. Please check the bot configuration."
+
+        def format_price_row(label: str, marker: str, width: int = 48) -> str:
+            """Wrap long price markers with continuation aligned under '$'."""
+            prefix = "    In:  " if label == "In" else "    Out: "
+            continuation_prefix = " " * len(prefix)
+            chunks = [marker[i:i + width] for i in range(0, len(marker), width)] or ["-"]
+            lines = [f"{prefix}{chunks[0]}"]
+            lines.extend(f"{continuation_prefix}{chunk}" for chunk in chunks[1:])
+            return "\n".join(lines)
         
         # Group models by provider
         providers = {}
@@ -699,14 +700,22 @@ class PyPoeSlackBot:
         
         for provider, models in providers.items():
             message += f"**{provider}:**\n"
+            message += "```\n"
             for model in models[:5]:  # Limit to first 5 per provider
-                cost = self.usage_tracker.get_model_cost(model)
-                message += f"• {model} ({cost} pts)\n"
+                input_marker, output_marker = get_model_price_markers(model)
+                message += f"{model}\n"
+                message += format_price_row("In", input_marker) + "\n"
+                message += format_price_row("Out", output_marker) + "\n"
+            message += "```\n"
             if len(models) > 5:
                 message += f"• ... and {len(models) - 5} more\n"
             message += "\n"
         
-        message += "💡 Use `/poe set-model <model-name>` to switch models"
+        message += (
+            "💡 Price markers use one `$` per $1.00 per 1M tokens "
+            "(In/Out).\n"
+            "💡 Use `/poe set-model <model-name>` to switch models"
+        )
         return message
     
     def _get_usage_message(self, user_id: str) -> str:
@@ -735,15 +744,12 @@ class PyPoeSlackBot:
 • Messages sent: {stats['total_messages']:,}
 • Estimated input tokens: {stats['total_input_tokens']:,}
 • Estimated output tokens: {stats['total_output_tokens']:,}
-• Estimated compute points used: {stats['estimated_compute_points']:,}
-
 **Today's Usage:**
-• Compute points: {stats['today_usage']}
+• Messages: {stats['today_usage']}
 
 **Top Models Used:**
 {top_models_text}
 
-💡 *Compute points are estimates based on model complexity*
 💡 *Each conversation context maintains separate history*
 """
     
@@ -873,9 +879,20 @@ class PyPoeSlackBot:
 async def main():
     """Main entry point"""
     import sys
-    
+
+    # Load the same .env candidates used by the web/CLI config before checking
+    # Slack-specific environment variables.
+    try:
+        get_config()
+    except ValueError:
+        # get_config() still loads .env before validating POE_API_KEY. Keep
+        # going so the required-variable report can show all missing values.
+        pass
+
     # Check required environment variables
     required_vars = ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "POE_API_KEY"]
+    if os.environ.get("SLACK_SOCKET_MODE", "true").lower() == "true":
+        required_vars.append("SLACK_APP_TOKEN")
     missing_vars = [var for var in required_vars if not os.environ.get(var)]
     
     if missing_vars:
@@ -887,12 +904,14 @@ async def main():
         print("   export SLACK_SIGNING_SECRET=your-signing-secret")
         print("   export SLACK_APP_TOKEN=xapp-your-app-token  # For Socket Mode")
         print("   export POE_API_KEY=your-poe-api-key")
-        print("3. Run: python -m pypoe.slack_bot")
+        print("3. Run: pypoe slack")
         return
     
     if not SLACK_AVAILABLE:
         print("❌ Slack SDK not installed. Install with:")
-        print("   pip install slack-bolt slack-sdk")
+        print("   pip install slack-bolt slack-sdk aiohttp")
+        if SLACK_IMPORT_ERROR:
+            print(f"   Import error: {SLACK_IMPORT_ERROR}")
         return
     
     print("🚀 Starting PyPoe Slack Bot...")

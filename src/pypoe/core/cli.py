@@ -101,7 +101,7 @@ Quick Start:
 def run_web_interface(host: str = '127.0.0.1', port: int = 8000):
     """Run the web interface."""
     try:
-        from .interfaces.web.runner import run_web_server
+        from ..interfaces.web.runner import run_web_server
         from .config import get_config
         config = get_config()
         # Note: run_web_server is synchronous, not async
@@ -114,15 +114,15 @@ def run_web_interface(host: str = '127.0.0.1', port: int = 8000):
 async def run_cli_interface(args):
     """Run the CLI interface."""
     try:
-        from .interfaces.cli.app import main as cli_main
-        
+        from ..interfaces.cli.app import main as cli_main
+
         # If no CLI command specified, default to interactive select
         if not args.cli_command:
             sys.argv = ['pypoe-cli', 'select']
         else:
             # Reconstruct argv for CLI
             sys.argv = ['pypoe-cli', args.cli_command]
-        
+
         await cli_main()
     except ImportError as e:
         print(f"❌ CLI interface not available: {e}")
@@ -131,19 +131,19 @@ async def run_cli_interface(args):
 async def run_slack_interface():
     """Run the Slack interface."""
     try:
-        from .interfaces.slack.runner import SlackRunner
-        runner = SlackRunner()
-        await runner.run()
+        from ..interfaces.slack.bot import main as slack_main
+        await slack_main()
     except ImportError as e:
         print(f"❌ Slack interface not available: {e}")
+        print("💡 Install Slack dependencies: pip install -e '.[web-ui]'")
         sys.exit(1)
 
 def run_daemon_command(args):
     """Run daemon management commands."""
     try:
         if args.daemon_command == 'web':
-            from .scripts.setup.run_pypoe_daemon import (
-                start_daemon, stop_daemon, restart_daemon, 
+            from ..scripts.setup.run_pypoe_daemon import (
+                start_daemon, stop_daemon, restart_daemon,
                 status_daemon, show_logs
             )
             

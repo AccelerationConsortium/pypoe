@@ -15,6 +15,7 @@ from pathlib import Path
 try:
     from pypoe.core.config import get_config
     from pypoe.core.client import PoeChatClient
+    from pypoe.core.models import DEFAULT_CHAT_MODEL
     from pypoe.interfaces.web.app import WebApp
     print("✅ PyPoe imports successful")
 except ImportError as e:
@@ -69,7 +70,7 @@ async def test_basic_functionality():
         # Test conversation creation
         conv_id = await client.history.create_conversation(
             title="Linux Test",
-            bot_name="GPT-3.5-Turbo"
+            bot_name=DEFAULT_CHAT_MODEL
         )
         print(f"✅ Conversation created: {conv_id[:8]}...")
         
@@ -103,7 +104,7 @@ async def test_basic_functionality():
         from pypoe.interfaces.web.app import ConversationCreate
         conv_data = ConversationCreate(
             title="Web Test",
-            bot_name="GPT-3.5-Turbo",
+            bot_name=DEFAULT_CHAT_MODEL,
             chat_mode="chatbot"
         )
         

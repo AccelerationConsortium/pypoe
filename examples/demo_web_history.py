@@ -8,7 +8,7 @@ This script shows how to:
 3. Test the new history features
 
 Usage:
-    python -m pypoe.examples.demo_web_history
+    python examples/demo_web_history.py
 """
 
 import asyncio

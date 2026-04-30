@@ -10,18 +10,23 @@ class Config:
     database_path: str = ""
     web_username: str = ""
     web_password: str = ""
+    # Auto-download images/videos referenced in assistant replies. Disabled by
+    # default so chat-only deployments don't need aiohttp. Enable with
+    # PYPOE_ENABLE_MEDIA=true and install the [media] extra.
+    enable_media: bool = False
 
     def __post_init__(self):
         # Try to load .env from multiple locations
         self._load_env_files()
-        
+
         # Set default database path to user-specific directory (~/.pypoe/)
         default_db_path = os.path.expanduser("~/.pypoe/single_webchat_history.db")
-        
+
         self.poe_api_key = os.getenv("POE_API_KEY", self.poe_api_key)
         self.database_path = os.getenv("DATABASE_PATH", default_db_path)
         self.web_username = os.getenv("PYPOE_WEB_USERNAME", self.web_username)
         self.web_password = os.getenv("PYPOE_WEB_PASSWORD", self.web_password)
+        self.enable_media = _parse_bool(os.getenv("PYPOE_ENABLE_MEDIA"), self.enable_media)
 
         # Ensure the ~/.pypoe directory exists
         pypoe_dir = Path(self.database_path).parent
@@ -35,17 +40,17 @@ class Config:
 
     def _load_env_files(self):
         """Load .env files from multiple possible locations."""
+        # core/config.py -> core/ -> pypoe/ -> src/ -> repo root
+        repo_root = Path(__file__).parent.parent.parent.parent
         possible_env_paths = [
-            # 1. In the PyPoe project root (where users typically put the .env file)
-            Path(__file__).parent.parent.parent / ".env",  # src/pypoe/config.py -> PyPoe/.env
-            # 2. In the user's PyPoe directory
+            # 1. Repo root (where developers typically put the .env file)
+            repo_root / ".env",
+            # 2. User config directory
             Path.home() / ".pypoe" / ".env",
-            # 3. Current working directory (original behavior)
+            # 3. Current working directory
             Path.cwd() / ".env",
-            # 4. pypoe.env in users directory (example file location)
-            Path(__file__).parent.parent.parent / "users" / "pypoe.env",
         ]
-        
+
         for env_path in possible_env_paths:
             if env_path.exists():
                 print(f"Loading environment from: {env_path}")
@@ -55,6 +60,13 @@ class Config:
             # No .env file found, try loading from environment anyway
             load_dotenv()
 
+def _parse_bool(value, default: bool) -> bool:
+    """Parse a string env var as a boolean, falling back to ``default``."""
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_config() -> Config:
     """Get the application configuration."""
-    return Config() 
+    return Config()

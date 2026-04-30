@@ -269,7 +269,7 @@ pypoe web --port 8000
 - **Shared database**: One source of truth for all your AI conversations
 
 ### **Data Location:**
-- **Database**: `users/history/pypoe_history.db`
+- **Database**: `~/.pypoe/single_webchat_history.db`
 - **Backup**: Copy this file to backup all conversations
 - **Migration**: Move this file to transfer conversations between machines
 
@@ -291,7 +291,7 @@ pypoe history --format table          # Enhanced view with message counts
 ### **Missing History:**
 - **Check**: `pypoe status` to verify history is enabled
 - **CLI**: Use `--save-history` flag for new conversations
-- **Database**: Verify `users/history/pypoe_history.db` exists
+- **Database**: Verify `~/.pypoe/single_webchat_history.db` exists
 
 ### **View Everything:**
 ```bash

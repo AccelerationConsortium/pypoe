@@ -280,6 +280,7 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 16px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     flex-shrink: 0;
 }
@@ -288,6 +289,7 @@ body {
     display: flex;
     align-items: center;
     gap: 20px;
+    min-width: 0;
 }
 
 .logo-section {
@@ -304,13 +306,14 @@ body {
     font-size: 1.2rem;
 }
 
-.mode-selector {
+.mode-selector,
+.bot-selector {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: center;
 }
 
-.mode-controls {
+.mode-controls,
+.bot-controls {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -343,24 +346,29 @@ body {
     }
 }
 
-.mode-controls label {
+.mode-controls label,
+.bot-controls label {
     font-weight: 500;
     color: #5a6c7d;
     font-size: 0.9rem;
+    line-height: 1;
 }
 
-.mode-controls select {
+.mode-controls select,
+.bot-controls select {
     padding: 6px 12px;
     border: 2px solid #bdc3c7;
     border-radius: 6px;
     font-size: 0.9rem;
     background: white;
     color: #2c3e50;
+    height: 34px;
     min-width: 200px;
     transition: all 0.3s ease;
 }
 
-.mode-controls select:focus {
+.mode-controls select:focus,
+.bot-controls select:focus {
     outline: none;
     border-color: #3498db;
     box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
@@ -388,11 +396,13 @@ body {
 .header-right {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 12px;
+    min-width: 0;
 }
 
 .header-actions {
     display: flex;
+    align-items: center;
     gap: 5px;
 }
 
@@ -403,6 +413,7 @@ body {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    height: 34px;
 }
 
 .chat-header {
@@ -423,37 +434,6 @@ body {
 .chat-info p {
     color: #7f8c8d;
     font-size: 0.9rem;
-}
-
-.bot-selector {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.bot-controls {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.bot-description {
-    min-height: 16px;
-    padding: 2px 0;
-}
-
-.bot-controls label {
-    font-weight: 600;
-    color: #2c3e50;
-}
-
-.bot-controls select {
-    padding: 8px 12px;
-    border: 1px solid #bdc3c7;
-    border-radius: 6px;
-    background: white;
-    font-size: 0.9rem;
-    transition: all 0.3s ease;
 }
 
 .bot-controls select:disabled,
@@ -1000,6 +980,23 @@ body {
     
     .main-content {
         width: 100%;
+    }
+
+    .global-header {
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+
+    .header-left,
+    .header-right {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    .mode-controls select,
+    .bot-controls select {
+        min-width: 0;
+        width: 220px;
     }
     
     .chat-header {

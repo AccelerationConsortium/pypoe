@@ -6,11 +6,11 @@ This script helps you run PyPoe web server as a daemon that keeps running
 even after you log out from SSH sessions.
 
 Usage:
-    python users/setup/run_pypoe_daemon.py start    # Start the daemon
-    python users/setup/run_pypoe_daemon.py stop     # Stop the daemon
-    python users/setup/run_pypoe_daemon.py restart  # Restart the daemon
-    python users/setup/run_pypoe_daemon.py status   # Check daemon status
-    python users/setup/run_pypoe_daemon.py logs     # View daemon logs
+    python scripts/setup/run_pypoe_daemon.py start    # Start the daemon
+    python scripts/setup/run_pypoe_daemon.py stop     # Stop the daemon
+    python scripts/setup/run_pypoe_daemon.py restart  # Restart the daemon
+    python scripts/setup/run_pypoe_daemon.py status   # Check daemon status
+    python scripts/setup/run_pypoe_daemon.py logs     # View daemon logs
 """
 
 import os
@@ -157,8 +157,8 @@ def start_daemon():
     
     print("🚀 Starting PyPoe web server daemon...")
     
-    # Set working directory to PyPoe project root
-    # This script is in users/setup/, so go up two levels to get to project root
+    # Set working directory to PyPoe project root.
+    # This script is in scripts/setup/, so go up two levels to reach the repo root.
     pypoe_root = Path(__file__).parent.parent.parent
     cwd = pypoe_root.resolve()
     
@@ -235,9 +235,9 @@ def start_daemon():
                 print_access_urls()
                 print()
                 print("💡 Use these commands:")
-                print("   python users/setup/run_pypoe_daemon.py status   # Check status")
-                print("   python users/setup/run_pypoe_daemon.py logs     # View logs")
-                print("   python users/setup/run_pypoe_daemon.py stop     # Stop daemon")
+                print("   python scripts/setup/run_pypoe_daemon.py status   # Check status")
+                print("   python scripts/setup/run_pypoe_daemon.py logs     # View logs")
+                print("   python scripts/setup/run_pypoe_daemon.py stop     # Stop daemon")
             else:
                 print("❌ Failed to start PyPoe web server")
                 print(f"📁 Check error log: {ERROR_LOG_FILE}")
@@ -354,7 +354,7 @@ def show_logs():
 def main():
     """Main function"""
     if len(sys.argv) != 2:
-        print("Usage: python users/setup/run_pypoe_daemon.py {start|stop|restart|status|logs}")
+        print("Usage: python scripts/setup/run_pypoe_daemon.py {start|stop|restart|status|logs}")
         sys.exit(1)
     
     command = sys.argv[1].lower()

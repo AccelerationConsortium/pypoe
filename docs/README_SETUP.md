@@ -89,12 +89,12 @@ PyPoe looks for configuration in these locations (in order):
 1. Project root: `.env`
 2. User home: `~/.pypoe/.env`
 3. Current directory: `.env`
-4. Scripts directory: `src/pypoe/scripts/pypoe.env`
+4. Scripts directory: `scripts/pypoe.env`
 
 **Quick Setup (Recommended)**:
 ```bash
 # Copy the example file
-cp src/pypoe/scripts/pypoe.env.example .env
+cp scripts/pypoe.env.example .env
 
 # Edit with your API key
 nano .env
@@ -118,7 +118,7 @@ EOF
 **Interactive Setup**:
 ```bash
 # Interactive setup script
-python src/pypoe/scripts/setup/setup_credentials.py
+python scripts/setup/setup_credentials.py
 ```
 
 ### Step 3: Test Your Setup
@@ -184,7 +184,7 @@ pypoe web --host 0.0.0.0 --port 8080
 pypoe web --web-username admin --web-password secret
 
 # Start as background daemon
-python src/pypoe/scripts/setup/run_pypoe_daemon.py start
+python scripts/setup/run_pypoe_daemon.py start
 ```
 
 **Environment Variables**:
@@ -199,7 +199,7 @@ PYPOE_WEB_PASSWORD=secret        # Optional: authentication password
 **Setup Script**:
 ```bash
 # Interactive web setup
-python src/pypoe/scripts/setup/setup_webui.py
+python scripts/setup/setup_webui.py
 ```
 
 ### Slack Bot Integration
@@ -263,7 +263,7 @@ export PYPOE_WEB_PASSWORD=secret
 pypoe web
 
 # Tailscale setup script
-python src/pypoe/scripts/setup/setup_tailscale.py
+python scripts/setup/setup_tailscale.py
 ```
 
 **Access URLs** when using `--host 0.0.0.0`:
@@ -308,16 +308,16 @@ pypoe slack-bot
 #### Method 1: Python Daemon (Recommended)
 ```bash
 # Start daemon
-python src/pypoe/scripts/setup/run_pypoe_daemon.py start
+python scripts/setup/run_pypoe_daemon.py start
 
 # Check status
-python src/pypoe/scripts/setup/run_pypoe_daemon.py status
+python scripts/setup/run_pypoe_daemon.py status
 
 # View logs
-python src/pypoe/scripts/setup/run_pypoe_daemon.py logs
+python scripts/setup/run_pypoe_daemon.py logs
 
 # Stop daemon
-python src/pypoe/scripts/setup/run_pypoe_daemon.py stop
+python scripts/setup/run_pypoe_daemon.py stop
 ```
 
 #### Method 2: nohup (Simple)
@@ -343,7 +343,7 @@ pypoe daemon logs
 #### systemd Service
 ```bash
 # Copy service file
-sudo cp src/pypoe/scripts/setup/pypoe-web.service /etc/systemd/system/
+sudo cp scripts/setup/pypoe-web.service /etc/systemd/system/
 
 # Edit paths in service file
 sudo nano /etc/systemd/system/pypoe-web.service
@@ -380,7 +380,7 @@ docker run -d \
 curl -fsSL https://tailscale.com/install.sh | sh
 
 # Set up PyPoe for Tailscale
-python src/pypoe/scripts/setup/setup_tailscale.py
+python scripts/setup/setup_tailscale.py
 
 # Start PyPoe
 pypoe web
@@ -400,19 +400,19 @@ ssh -R 8000:localhost:8000 user@remote-server
 ### Built-in Health Checks
 ```bash
 # Basic health check
-python src/pypoe/scripts/setup/pypoe_health_check.py
+python scripts/setup/pypoe_health_check.py
 
 # Full system check
-python src/pypoe/scripts/setup/pypoe_health_check.py --full
+python scripts/setup/pypoe_health_check.py --full
 
 # JSON output for monitoring
-python src/pypoe/scripts/setup/pypoe_health_check.py --json --full
+python scripts/setup/pypoe_health_check.py --json --full
 ```
 
 ### Automated Monitoring
 ```bash
 # Cron job for health monitoring
-*/5 * * * * cd /path/to/PyPoe && python src/pypoe/scripts/setup/pypoe_health_check.py --json > /dev/null || echo "PyPoe down" | mail admin@example.com
+*/5 * * * * cd /path/to/PyPoe && python scripts/setup/pypoe_health_check.py --json > /dev/null || echo "PyPoe down" | mail admin@example.com
 ```
 
 ## 🔍 Troubleshooting
@@ -470,7 +470,7 @@ pypoe config | grep database
 pypoe clear-history --confirm
 
 # Check permissions
-ls -la users/history/pypoe_history.db
+ls -la ~/.pypoe/single_webchat_history.db
 ```
 
 ### Debug Mode
@@ -499,13 +499,13 @@ tail -f ~/.pypoe-web.log
 
 ```bash
 # System information
-python src/pypoe/scripts/setup/pypoe_health_check.py --full
+python scripts/setup/pypoe_health_check.py --full
 
 # Network connectivity
-python src/pypoe/scripts/setup/debug_networking.py
+python scripts/setup/debug_networking.py
 
 # Environment validation
-python src/pypoe/scripts/setup/validate_environment.py
+python scripts/setup/validate_environment.py
 ```
 
 ## 📚 Additional Resources

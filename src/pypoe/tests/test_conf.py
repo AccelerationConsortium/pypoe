@@ -26,7 +26,7 @@ def mock_env_without_api_key():
     env_copy = {k: v for k, v in os.environ.items() if k != "POE_API_KEY"}
     
     with patch.dict(os.environ, env_copy, clear=True), \
-         patch('pypoe.config.load_dotenv') as mock_load_dotenv:
+         patch('pypoe.core.config.load_dotenv') as mock_load_dotenv:
         # Mock load_dotenv to do nothing
         mock_load_dotenv.return_value = None
         yield 

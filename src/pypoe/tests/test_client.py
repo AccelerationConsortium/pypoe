@@ -6,6 +6,7 @@ import os
 from unittest.mock import patch
 
 from pypoe import PoeChatClient
+from pypoe.core.models import DEFAULT_CHAT_MODEL
 from .test_conf import test_api_key, mock_env_with_api_key, mock_env_without_api_key
 
 def test_client_initialization_with_api_key(mock_env_with_api_key, test_api_key):
@@ -36,7 +37,7 @@ async def test_get_available_bots(mock_env_with_api_key):
     
     assert isinstance(bots, list)
     assert len(bots) > 0
-    assert "GPT-3.5-Turbo" in bots
+    assert DEFAULT_CHAT_MODEL in bots
 
 @pytest.mark.asyncio
 async def test_client_close(mock_env_with_api_key):

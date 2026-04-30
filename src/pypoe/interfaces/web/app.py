@@ -15,6 +15,7 @@ import uvicorn
 from ...core.config import get_config, Config
 from ...core.client import PoeChatClient
 from ...core.logging_db import logger
+from ...core.models import CHAT_MODELS, DEFAULT_CHAT_MODEL
 
 # TODO: Add support for remote access of the webpage with username and password protection
 # This would involve:
@@ -118,7 +119,7 @@ class WebApp:
                 return fallback_topic
             
             # If fallback is not good enough, try AI models
-            models_to_try = ["GPT-4o-mini", "GPT-3.5-Turbo", "Claude-3.5-Sonnet"]
+            models_to_try = list(CHAT_MODELS)
             
             for model in models_to_try:
                 try:
@@ -388,8 +389,12 @@ class WebApp:
                     conv['bot_locked'] = len(user_messages) > 0  # Bot is locked after first user message
                     conv['chat_mode_locked'] = len(user_messages) > 0  # Chat mode is locked after first user message
                 
-                # Sort by last updated (most recent first)
-                conversations.sort(key=lambda x: x.get('updated_at', x.get('created_at', '')), reverse=True)
+                # Sort by last updated (most recent first). Coerce to string
+                # so legacy rows with NULL ``updated_at`` don't break sorting.
+                conversations.sort(
+                    key=lambda x: (x.get('updated_at') or x.get('created_at') or ''),
+                    reverse=True,
+                )
                 
                 return JSONResponse(conversations)
             except Exception as e:
@@ -596,7 +601,7 @@ class WebApp:
                 
                 # Get existing messages to check if conversation has started
                 existing_messages = await self.client.get_conversation_messages(conversation_id)
-                conversation_bot = conversation.get('bot_name', 'GPT-3.5-Turbo')
+                conversation_bot = conversation.get('bot_name') or DEFAULT_CHAT_MODEL
                 conversation_chat_mode = conversation.get('chat_mode', 'chatbot')
                 
                 # Validation for conversations with existing messages
@@ -659,7 +664,7 @@ class WebApp:
                         user_messages = [msg for msg in messages if msg.get('role') == 'user']
                         has_user_messages = len(user_messages) > 0
                         
-                        conversation_bot = conversation.get('bot_name', 'GPT-3.5-Turbo')
+                        conversation_bot = conversation.get('bot_name') or DEFAULT_CHAT_MODEL
                         conversation_chat_mode = conversation.get('chat_mode', 'chatbot')
                         
                         # Add locking metadata for the frontend
@@ -749,13 +754,16 @@ class WebApp:
                 reverse_order = sort_order.lower() == "desc"
                 
                 if sort_by == "message_count":
-                    filtered_conversations.sort(key=lambda x: x['message_count'], reverse=reverse_order)
+                    filtered_conversations.sort(key=lambda x: x.get('message_count') or 0, reverse=reverse_order)
                 elif sort_by == "title":
-                    filtered_conversations.sort(key=lambda x: x.get('title', '').lower(), reverse=reverse_order)
+                    filtered_conversations.sort(key=lambda x: (x.get('title') or '').lower(), reverse=reverse_order)
                 elif sort_by == "created_at":
-                    filtered_conversations.sort(key=lambda x: x.get('created_at', ''), reverse=reverse_order)
+                    filtered_conversations.sort(key=lambda x: x.get('created_at') or '', reverse=reverse_order)
                 else:  # default to updated_at
-                    filtered_conversations.sort(key=lambda x: x.get('updated_at', x.get('created_at', '')), reverse=reverse_order)
+                    filtered_conversations.sort(
+                        key=lambda x: (x.get('updated_at') or x.get('created_at') or ''),
+                        reverse=reverse_order,
+                    )
                 
                 # Limit results
                 filtered_conversations = filtered_conversations[:limit]
@@ -1362,7 +1370,7 @@ class WebApp:
                     message_data = json.loads(data)
                     
                     user_message = message_data.get("message", "")
-                    requested_bot = message_data.get("bot_name", "GPT-3.5-Turbo")
+                    requested_bot = message_data.get("bot_name") or DEFAULT_CHAT_MODEL
                     requested_chat_mode = message_data.get("chat_mode", "chatbot")
                     
                     if not user_message:
@@ -1382,7 +1390,7 @@ class WebApp:
                         
                         # Get existing messages to check if conversation has started
                         existing_messages = await self.client.get_conversation_messages(conversation_id)
-                        conversation_bot = conversation.get('bot_name', 'GPT-3.5-Turbo')
+                        conversation_bot = conversation.get('bot_name') or DEFAULT_CHAT_MODEL
                         conversation_chat_mode = conversation.get('chat_mode', 'chatbot')
                         
                         # Validation for conversations with existing messages

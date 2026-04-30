@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pypoe"
-version = "2.1.0"
+version = "2.5.0"
 description = "Python client for Poe.com using the official API"
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,14 +30,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Option 1: Default Installation (pip install pypoe)
-# Includes: CLI + Core API + Database + Examples + Scripts
-# Users get everything they need to start using PyPoe
-# Only interfaces require web-ui flag, only tests require dev flag
+# Default install (pip install pypoe) ships the core SDK, database, and CLI
+# entry point. Interfaces (web, slack) are opt-in, and media auto-download
+# is its own opt-in to avoid pulling aiohttp onto chat-only deployments.
 
-# Option 2: Web UI & Interfaces
-# pip install pypoe[web-ui]  
-# Enables: Web interface + Slack bot (interfaces will work)
+# Web + Slack interfaces
+# pip install pypoe[web-ui]
 web-ui = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
@@ -45,13 +43,21 @@ web-ui = [
     "python-multipart>=0.0.6",
     "slack-bolt>=1.18.1",
     "slack-sdk>=3.26.2",
+    "aiohttp>=3.9.0",  # Required by slack_bolt.async_app / Socket Mode
 ]
 
-# Option 3: Development Mode
+# Media auto-download support (images/videos)
+# Requires PYPOE_ENABLE_MEDIA=true at runtime as well.
+# pip install pypoe[media]
+media = [
+    "aiohttp>=3.9.0",
+]
+
+# Development
 # pip install pypoe[dev]
-# Adds: Testing tools and development dependencies
 dev = [
     "pypoe[web-ui]",
+    "pypoe[media]",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "black>=23.0.0",
@@ -72,9 +78,7 @@ Issues = "https://github.com/your-username/pypoe/issues"
 where = ["src"]
 include = ["pypoe*"]
 
-# Include web static files and templates
+# Only bundle the web assets that the installed package needs at runtime.
+# Ops scripts, examples and docs live at the repo root and are not packaged.
 [tool.setuptools.package-data]
 "pypoe.interfaces.web" = ["static/**/*", "templates/**/*"]
-"pypoe.scripts.setup" = ["*.service", "*.py"]
-"pypoe.docs" = ["*.md"]
-"*" = ["*.py", "*.md", "*.txt", "*.yaml", "*.json"] 

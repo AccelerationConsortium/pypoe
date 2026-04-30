@@ -6,10 +6,7 @@ This script helps identify and fix common Linux-specific issues with PyPoe's his
 It provides step-by-step diagnostics and automated fixes.
 
 Usage:
-    python src/pypoe/scripts/linux_history_troubleshoot.py
-    
-Or via CLI:
-    pypoe troubleshoot-linux
+    python scripts/linux_history_troubleshoot.py
 """
 
 import asyncio
@@ -22,7 +19,10 @@ from typing import Dict, List, Tuple
 
 # Add PyPoe to path if running standalone
 if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
+    # scripts/linux_history_troubleshoot.py -> scripts/ -> repo root
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from pypoe.core.models import DEFAULT_CHAT_MODEL
 
 def print_section(title: str):
     """Print a formatted section header."""
@@ -211,7 +211,7 @@ async def test_full_workflow(config) -> Tuple[bool, List[str]]:
         print_step("Creating test conversation")
         conv_id = await client.history.create_conversation(
             title="Linux Troubleshoot Test",
-            bot_name="GPT-3.5-Turbo",
+            bot_name=DEFAULT_CHAT_MODEL,
             chat_mode="chatbot"
         )
         print_success(f"Conversation created: {conv_id[:8]}...")
@@ -221,7 +221,7 @@ async def test_full_workflow(config) -> Tuple[bool, List[str]]:
             conversation_id=conv_id,
             role="user",
             content="Linux troubleshooting test message",
-            bot_name="GPT-3.5-Turbo"
+            bot_name=DEFAULT_CHAT_MODEL
         )
         print_success("Message added")
         

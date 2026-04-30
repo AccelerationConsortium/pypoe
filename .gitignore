@@ -1,131 +1,40 @@
-# Python
+# Python caches/build output
 __pycache__/
 *.py[cod]
-*$py.class
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
 dist/
-downloads/
-eggs/
+build/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
+# Test/type-check caches
 .pytest_cache/
-cover/
+.coverage*
+htmlcov/
+.cache
+.mypy_cache/
+.pyre/
+.pytype/
 
-# Virtual environments
+# Local environments and secrets
 .env
+.env.*
+src/.env
 .venv
-env/
 venv/
-ENV/
-env.bak/
-venv.bak/
 
-# IDEs
-.vscode/
+# Editor/OS noise
 .idea/
+.vscode/
 *.swp
-*.swo
 *~
-
-# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
-# PyPoe specific
-# History database files (created at runtime)
-users/history/*.db
-users/history/*.db-*
+# PyPoe runtime files
 pypoe_history.db
 test_pypoe_history.db
 single_webchat_history.db
 test_single_webchat_history.db
-
-# Temporary files
-*.tmp
-*.temp
-
-# Log files
 *.log
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# pipenv
-Pipfile.lock
-
-# poetry
-poetry.lock
-
-# Celery
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-# Test cache directories
-tests/__pycache__/
-tests/.pytest_cache/
-
+*.tmp

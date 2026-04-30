@@ -73,7 +73,7 @@ Run the comprehensive test suite:
 
 ```bash
 cd PyPoe
-python users/test_bot_locking.py
+pytest src/pypoe/tests/test_bot_locking.py
 ```
 
 **Test Coverage**:

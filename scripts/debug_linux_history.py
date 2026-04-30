@@ -7,10 +7,7 @@ It tests database creation, permissions, and various operations to identify
 where the problem might be occurring.
 
 Usage:
-    python src/pypoe/scripts/debug_linux_history.py
-    
-Or via CLI:
-    pypoe debug-linux
+    python scripts/debug_linux_history.py
 """
 
 import asyncio
@@ -20,12 +17,13 @@ import traceback
 from pathlib import Path
 from typing import Dict, Any
 
-# Add the project root to Python path
-project_root = Path(__file__).parent.parent.parent.parent
+# scripts/debug_linux_history.py -> scripts/ -> repo root
+project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from pypoe.core.config import get_config
 from pypoe.core.client import PoeChatClient
+from pypoe.core.models import DEFAULT_CHAT_MODEL
 
 async def test_config():
     """Test configuration loading."""
@@ -118,7 +116,7 @@ async def test_conversation_operations(history):
         if hasattr(history, 'create_conversation'):
             conversation_id = await history.create_conversation(
                 title="Linux Test Conversation",
-                bot_name="GPT-3.5-Turbo"
+                bot_name=DEFAULT_CHAT_MODEL
             )
         else:
             conversation_id = await history.save_conversation("Linux Test Conversation")
@@ -208,7 +206,7 @@ async def test_client_integration(config):
         print("   Testing new conversation creation through client...")
         test_conv_id = await client.history.create_conversation(
             title="Client Integration Test",
-            bot_name="GPT-3.5-Turbo"
+            bot_name=DEFAULT_CHAT_MODEL
         )
         print(f"   ✅ Client created conversation: {test_conv_id}")
         

@@ -6,9 +6,9 @@ Comprehensive health monitoring for PyPoe web server daemon.
 Can be used with monitoring systems like Nagios, Zabbix, or cron jobs.
 
 Usage:
-    python users/setup/pypoe_health_check.py          # Basic health check
-    python users/setup/pypoe_health_check.py --full   # Full system check
-    python users/setup/pypoe_health_check.py --json   # JSON output for monitoring
+    python scripts/setup/pypoe_health_check.py          # Basic health check
+    python scripts/setup/pypoe_health_check.py --full   # Full system check
+    python scripts/setup/pypoe_health_check.py --json   # JSON output for monitoring
 """
 
 import os

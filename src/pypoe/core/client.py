@@ -1,14 +1,11 @@
 import asyncio
-import sys
 import re
 from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Any, Optional
 import fastapi_poe as fp
 
 from .config import get_config, Config
-
-# Add users directory to path for any user scripts
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "users"))
+from .models import CHAT_MODELS, DEFAULT_CHAT_MODEL
 
 try:
     from .history import HistoryManager
@@ -135,14 +132,14 @@ class PoeChatClient:
         self.content_processor = ContentProcessor()
         
         if self.enable_history:
-            # Setup media directory for history
-            from pathlib import Path
+            # Setup media directory for history (only materialized if media
+            # auto-download is enabled).
             media_dir = Path(self.config.database_path).parent / "media"
-            
-            # Initialize HistoryManager with media support
+
             self.history = HistoryManager(
                 db_path=str(self.config.database_path),
-                media_dir=str(media_dir)
+                media_dir=str(media_dir),
+                enable_media=self.config.enable_media,
             )
             self._history_initialized = False
         else:
@@ -170,7 +167,7 @@ class PoeChatClient:
     async def send_message(
         self, 
         message: str, 
-        bot_name: str = "GPT-3.5-Turbo",
+        bot_name: str = DEFAULT_CHAT_MODEL,
         conversation_id: Optional[str] = None,
         save_history: bool = True
     ) -> AsyncGenerator[str, None]:
@@ -182,7 +179,7 @@ class PoeChatClient:
         
         Args:
             message: The message to send
-            bot_name: The bot to send the message to (default: GPT-3.5-Turbo)
+            bot_name: The bot to send the message to
             conversation_id: Optional conversation ID for history tracking
             save_history: Whether to save the conversation to history
             
@@ -332,7 +329,7 @@ class PoeChatClient:
     async def send_conversation(
         self, 
         messages: List[Dict[str, str]], 
-        bot_name: str = "GPT-3.5-Turbo",
+        bot_name: str = DEFAULT_CHAT_MODEL,
         conversation_id: Optional[str] = None,
         save_history: bool = True
     ) -> AsyncGenerator[str, None]:
@@ -436,72 +433,12 @@ class PoeChatClient:
 
     async def get_available_bots(self) -> List[str]:
         """
-        Get a list of available bots.
-        Note: This list contains models available on Poe as of January 2025.
-        Some bots may require special permissions or subscriptions.
+        Get the chat-only Poe models configured for this deployment.
+
+        Update ``pypoe.core.models.CHAT_MODELS`` when Poe's supported model
+        catalog changes.
         """
-        # Updated comprehensive list of Poe models as of January 2025
-        return [
-            # === OpenAI Models (GPT Family) ===
-            "GPT-4-Turbo",
-            "GPT-4",
-            "GPT-4o",
-            "GPT-4o-mini",
-            "o4-mini",
-            
-            # === Anthropic Models (Claude Family) ===
-            "Claude-Opus-4-Search",
-            "Claude-Sonnet-4-Search",
-            "Claude-Opus-4-Reasoning",
-            "Claude-Sonnet-4-Reasoning",
-            
-            # === Google Models (Gemini Family) ===
-            "Gemini-2.5-Pro",
-            "Gemini-2.5-Flash",
-            
-            # === Meta Models (Llama Family) ===
-            "Llama-4-Maverick-B10",
-            "Llama-4-Scout-B10",
-            "Llama-3.3-70B",
-            
-            # === DeepSeek Models (Open Source) ===
-            "DeepSeek-R1",
-            "DeepSeek-V3",
-            
-            # === xAI Models ===
-            "Grok-4",
-            "Grok-3-mini",
-            
-            # === Alibaba Models ===
-            "Qwen-3-235B-T",
-            "Qwen3-235B-A22B-FW",
-            
-            # === Cohere Models ===
-            "Command-R",
-            "Command-R-Plus",
-            
-            # === Image Generation Models ===
-            "DALL-E-3",
-            # "FLUX-pro-1.1-ultra",
-            # "FLUX-pro-1.1",
-            # "Imagen-4-Ultra-Exp", # Google DeepMind
-            # "Imagen-4",
-            # "Imagen-4-Fast",
-            # "Seedream-3.0",    # ByteDance, a bilingual model
-            # "StableDiffusionXL",
-            # "StableDiffusion3.5-L",
-            
-            # === Video Generation Models ===
-            "Runway-Gen-4-Turbo",
-            "Veo-3",
-            "Sora",
-            "Kling-2.1-Pro",
-            "Kling-2.1-Master",
-            "Seedance-1.0-Lite",
-            
-            # === Specialized Models ===
-            #"Assistant",         # Poe's default assistant
-        ]
+        return list(CHAT_MODELS)
 
     async def get_conversations(self) -> List[Dict[str, Any]]:
         """Get all conversations from history."""
@@ -542,21 +479,21 @@ class PoeChatClient:
         await self._ensure_history_initialized()
         return await self.history.create_conversation(title, bot_name, chat_mode, topic)
 
-    async def generate_topic_from_message(self, first_message: str, bot_name: str = "GPT-4o-mini") -> str:
+    async def generate_topic_from_message(self, first_message: str, bot_name: str = DEFAULT_CHAT_MODEL) -> str:
         """
         Generate a short topic (less than 5 words) from the first user message.
         
         Args:
             first_message: The first message to generate a topic from
-            bot_name: The bot to use for topic generation (default: GPT-4o-mini)
+            bot_name: The bot to use for topic generation
             
         Returns:
             A short topic string
         """
         try:
-            # Try multiple models in order of preference
-            models_to_try = ["GPT-4o-mini", "GPT-3.5-Turbo", "Claude-3.5-Sonnet"]
-            
+            # Try the requested/default model first, then the configured catalog.
+            models_to_try = [bot_name] + [model for model in CHAT_MODELS if model != bot_name]
+
             for model in models_to_try:
                 try:
                     # Use a fast model to generate the topic
@@ -652,7 +589,12 @@ class PoeChatClient:
                 )
                 await db.commit()
 
-    async def generate_and_update_topic(self, conversation_id: str, first_message: str, bot_name: str = "GPT-4o-mini"):
+    async def generate_and_update_topic(
+        self,
+        conversation_id: str,
+        first_message: str,
+        bot_name: str = DEFAULT_CHAT_MODEL,
+    ):
         """
         Generate a topic from the first message and update the conversation.
         

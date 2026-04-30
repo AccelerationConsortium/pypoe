@@ -184,9 +184,7 @@ def find_env_file() -> Optional[Path]:
     """Find the appropriate .env file"""
     possible_paths = [
         Path.cwd() / ".env",
-        Path.cwd() / "pypoe.env",
-        Path.cwd() / "users" / "pypoe.env",
-        Path.home() / ".pypoe.env"
+        Path.home() / ".pypoe" / ".env",
     ]
     
     for path in possible_paths:
@@ -304,7 +302,7 @@ def print_next_steps(tailscale_ip: str, port: str = "8000"):
     print(f"   • LAN access: http://YOUR_LOCAL_IP:{port}")
     print()
     print("3. Optional: Set up web authentication for security:")
-    print("   python users/setup/setup_webui.py")
+    print("   python scripts/setup/setup_webui.py")
     print()
     print("💡 Tips:")
     print("- Server binds to 0.0.0.0 for maximum accessibility")

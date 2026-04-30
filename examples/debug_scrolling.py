@@ -9,6 +9,8 @@ import requests
 import json
 from pathlib import Path
 
+from pypoe.core.models import DEFAULT_CHAT_MODEL
+
 def create_test_conversation():
     """Create a conversation with many messages for scrolling tests."""
     
@@ -20,7 +22,7 @@ def create_test_conversation():
         print("🔧 Creating test conversation...")
         response = requests.post(f"{base_url}/api/conversation/new", data={
             'title': 'Scrolling Test Conversation',
-            'bot_name': 'GPT-4'
+            'bot_name': DEFAULT_CHAT_MODEL
         })
         
         if response.status_code != 200:

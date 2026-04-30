@@ -4,6 +4,7 @@ import os
 
 from pypoe import PoeChatClient, HistoryManager
 from pypoe.core.config import get_config
+from pypoe.core.models import DEFAULT_CHAT_MODEL
 from pathlib import Path
 
 async def main():
@@ -23,13 +24,13 @@ async def main():
         print(f"Available bots: {', '.join(bots)}")
         
         # Send a simple message
-        print("\nSending message to GPT-3.5-Turbo...")
+        print(f"\nSending message to {DEFAULT_CHAT_MODEL}...")
         message = "Hello! Can you explain what the Poe API is in one sentence?"
         
         print(f"User: {message}")
         print("Bot: ", end="", flush=True)
         
-        async for chunk in client.send_message(message, bot_name="GPT-3.5-Turbo", save_history=True):
+        async for chunk in client.send_message(message, bot_name=DEFAULT_CHAT_MODEL, save_history=True):
             print(chunk, end="", flush=True)
         print("\n")
         
@@ -46,7 +47,7 @@ async def main():
             print(f"{msg['role'].title()}: {msg['content']}")
         
         print("Bot: ", end="", flush=True)
-        async for chunk in client.send_conversation(conversation, bot_name="GPT-3.5-Turbo", save_history=True):
+        async for chunk in client.send_conversation(conversation, bot_name=DEFAULT_CHAT_MODEL, save_history=True):
             print(chunk, end="", flush=True)
         print("\n")
         

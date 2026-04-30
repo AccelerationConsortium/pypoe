@@ -2,18 +2,18 @@
 History Management for PyPoe
 
 This module provides local conversation history management using SQLite.
-The database files are stored in users/history/ to keep user data
-separate from the core package.
+The database defaults to ``~/.pypoe/`` so that user data lives outside
+the installed package and survives reinstalls.
 
 Classes:
     HistoryManager: Manages conversation history with SQLite storage
 
 Usage:
-    from pypoe.manager import HistoryManager
-    
+    from pypoe.core.manager import HistoryManager
+
     manager = HistoryManager()
     await manager.initialize()
-    
+
     # Save a conversation
     conv_id = await manager.save_conversation("My Chat")
     await manager.save_message(conv_id, "user", "Hello!")
@@ -22,45 +22,29 @@ Usage:
 import aiosqlite
 import os
 import uuid
+from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 
 class HistoryManager:
     """
     Manages conversation history with SQLite storage.
-    
-    The database is stored in users/history/ to keep user data
-    separate from the core package files.
+
+    The database defaults to ``~/.pypoe/`` so that user data stays
+    outside the installed package.
     """
-    
+
     def __init__(self, db_path: Optional[str] = None):
         """
         Initialize the history manager.
-        
+
         Args:
-            db_path: Custom database path. If None, uses default location
-                    in users/history/ directory.
+            db_path: Custom database path. If None, uses the default
+                     location under ``~/.pypoe/``.
         """
         if db_path is None:
-            # Find the project root (where user_scripts is located)
-            # Start from this file's location and go up to find user_scripts
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = current_dir
-            
-            # Go up directories until we find users or reach the root
-            for _ in range(5):  # Limit search depth
-                project_root = os.path.dirname(project_root)
-                users_path = os.path.join(project_root, 'users')
-                if os.path.exists(users_path):
-                    break
-            else:
-                # Fallback: use current working directory
-                project_root = os.getcwd()
-            
-            # Store database in users/history/
-            history_dir = os.path.join(project_root, 'users', 'history')
-            db_path = os.path.join(history_dir, "conversations.db")
-        
+            db_path = str(Path.home() / ".pypoe" / "conversations.db")
+
         self.db_path = db_path
         self._initialized = False
     

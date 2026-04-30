@@ -17,7 +17,7 @@ def check_environment():
     print("-" * 30)
     
     # Check if we're in PyPoe directory
-    project_files = ["pyproject.toml", "src/pypoe", "users/"]
+    project_files = ["pyproject.toml", "src/pypoe"]
     found = [f for f in project_files if Path(f).exists()]
     print(f"📁 PyPoe files found: {found}")
     
@@ -124,8 +124,8 @@ def generate_commands():
         "pypoe web --host 0.0.0.0 --port 8000",
         "",
         "# Check database directly",
-        "sqlite3 users/history/pypoe_history.db 'SELECT COUNT(*) FROM conversations;'",
-        "sqlite3 users/history/pypoe_history.db '.tables'",
+        "sqlite3 ~/.pypoe/single_webchat_history.db 'SELECT COUNT(*) FROM conversations;'",
+        "sqlite3 ~/.pypoe/single_webchat_history.db '.tables'",
     ]
     
     for cmd in commands:

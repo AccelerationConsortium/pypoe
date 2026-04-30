@@ -68,7 +68,7 @@ POE_API_KEY={api_key}
         print(f"✅ Credentials saved to: {env_path}")
         print()
         print("Setup complete! You can now use PyPoe:")
-        print("1. Try the basic example: python src/pypoe/examples/basic_usage.py")
+        print("1. Try the basic example: python examples/basic_usage.py")
         print("2. Use the CLI: pypoe --help")
         print("3. Import in your code: from pypoe import PoeChatClient")
 

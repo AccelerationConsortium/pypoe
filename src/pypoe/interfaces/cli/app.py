@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ...core.client import PoeChatClient
 from ...core.config import get_config
+from ...core.models import DEFAULT_CHAT_MODEL
 
 
 class PyPoeCLI:
@@ -151,37 +152,39 @@ class PyPoeCLI:
         finally:
             await self._close_client()
     
-    async def start_chat(self, conv_id: Optional[str] = None, bot_name: str = "GPT-4o-mini", 
+    async def start_chat(self, conv_id: Optional[str] = None, bot_name: str = DEFAULT_CHAT_MODEL,
                         title: Optional[str] = None) -> None:
         """Start or continue a chat conversation."""
         client = await self._get_client()
         
         try:
+            is_new_conversation = False
             # Handle existing conversation
             if conv_id:
                 conversations = await client.get_conversations()
                 conversation = next((c for c in conversations if c['id'] == conv_id), None)
-                
+
                 if not conversation:
                     print(f"❌ Conversation with ID '{conv_id}' not found.")
                     return
-                
+
                 bot_name = conversation.get('bot_name', bot_name)
                 topic = conversation.get('topic', 'No topic')
                 conv_title = conversation.get('title', 'Untitled')
-                
+
                 print("=" * 60)
                 print(f"💬 Continuing chat: {conv_title}")
                 print(f"🏷️ Topic: {topic}")
                 print(f"🤖 Bot: {bot_name}")
                 print(f"🆔 ID: {conv_id}")
                 print("=" * 60)
-                
+
             else:
+                is_new_conversation = True
                 # Create new conversation
                 if not title:
                     title = f"CLI Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                
+
                 conv_id = await client.create_conversation(
                     title=title,
                     bot_name=bot_name,
@@ -214,10 +217,9 @@ class PyPoeCLI:
                     
                     message_count += 1
                     print(f"🤖 {bot_name}: ", end='', flush=True)
-                    
-                    # Generate topic from first message
-                    if message_count == 1 and not conv_id:
-                        # This is a new conversation, generate topic in background
+
+                    # Generate topic from first message of a freshly created conversation
+                    if message_count == 1 and is_new_conversation:
                         asyncio.create_task(
                             client.generate_and_update_topic(conv_id, message)
                         )
@@ -383,7 +385,7 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   pypoe-cli chat                           # Start new chat with default bot
-  pypoe-cli chat --bot "Claude-3.5-Sonnet" # Start chat with specific bot
+  pypoe-cli chat --bot "Claude-Sonnet-4.6" # Start chat with specific bot
   pypoe-cli chat --conv-id "conv_123"      # Continue existing conversation
   pypoe-cli list                           # List all conversations
   pypoe-cli list --details                 # List with message previews
@@ -398,7 +400,7 @@ Examples:
     # Chat command
     chat_parser = subparsers.add_parser('chat', help='Start or continue a chat')
     chat_parser.add_argument('--conv-id', help='Conversation ID to continue')
-    chat_parser.add_argument('--bot', default='GPT-4o-mini', help='Bot to chat with (default: GPT-4o-mini)')
+    chat_parser.add_argument('--bot', default=DEFAULT_CHAT_MODEL, help=f'Bot to chat with (default: {DEFAULT_CHAT_MODEL})')
     chat_parser.add_argument('--title', help='Title for new conversation')
     
     # List command

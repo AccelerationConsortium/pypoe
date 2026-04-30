@@ -20,27 +20,27 @@ When you run PyPoe with `PYPOE_HOST=0.0.0.0`, the web server will be accessible 
 
 ### Start the daemon
 ```bash
-python src/pypoe/scripts/setup/run_pypoe_daemon.py start
+python scripts/setup/run_pypoe_daemon.py start
 ```
 
 ### Check status
 ```bash
-python src/pypoe/scripts/setup/run_pypoe_daemon.py status
+python scripts/setup/run_pypoe_daemon.py status
 ```
 
 ### View logs
 ```bash
-python src/pypoe/scripts/setup/run_pypoe_daemon.py logs
+python scripts/setup/run_pypoe_daemon.py logs
 ```
 
 ### Stop the daemon
 ```bash
-python src/pypoe/scripts/setup/run_pypoe_daemon.py stop
+python scripts/setup/run_pypoe_daemon.py stop
 ```
 
 ### Restart the daemon
 ```bash
-python src/pypoe/scripts/setup/run_pypoe_daemon.py restart
+python scripts/setup/run_pypoe_daemon.py restart
 ```
 
 ### Features:
@@ -56,17 +56,17 @@ python src/pypoe/scripts/setup/run_pypoe_daemon.py restart
 
 ### Basic Health Check
 ```bash
-python src/pypoe/scripts/setup/pypoe_health_check.py
+python scripts/setup/pypoe_health_check.py
 ```
 
 ### Full System Check
 ```bash
-python src/pypoe/scripts/setup/pypoe_health_check.py --full
+python scripts/setup/pypoe_health_check.py --full
 ```
 
 ### JSON Output (for monitoring systems)
 ```bash
-python src/pypoe/scripts/setup/pypoe_health_check.py --json --full
+python scripts/setup/pypoe_health_check.py --json --full
 ```
 
 ### Health Check Features:
@@ -94,10 +94,10 @@ python src/pypoe/scripts/setup/pypoe_health_check.py --json --full
 ### Automated Monitoring with Cron:
 ```bash
 # Check every 5 minutes, email on failure
-*/5 * * * * cd /path/to/PyPoe && python src/pypoe/scripts/setup/pypoe_health_check.py --json > /dev/null || echo "PyPoe health check failed" | mail -s "PyPoe Alert" admin@example.com
+*/5 * * * * cd /path/to/PyPoe && python scripts/setup/pypoe_health_check.py --json > /dev/null || echo "PyPoe health check failed" | mail -s "PyPoe Alert" admin@example.com
 
 # Full check once per hour
-0 * * * * cd /path/to/PyPoe && python src/pypoe/scripts/setup/pypoe_health_check.py --full --json >> /var/log/pypoe-health.log
+0 * * * * cd /path/to/PyPoe && python scripts/setup/pypoe_health_check.py --full --json >> /var/log/pypoe-health.log
 ```
 
 ## 🔧 Method 2: Using nohup (Simple)
@@ -137,7 +137,7 @@ sudo su - pypoe
 ### 2. Copy service file
 ```bash
 # Copy the service file (adjust paths as needed)
-sudo cp /path/to/PyPoe/src/pypoe/scripts/setup/pypoe-web.service /etc/systemd/system/
+sudo cp /path/to/PyPoe/scripts/setup/pypoe-web.service /etc/systemd/system/
 
 # Edit the service file to match your paths
 sudo nano /etc/systemd/system/pypoe-web.service
@@ -173,7 +173,7 @@ sudo systemctl restart pypoe-web
 sudo journalctl -u pypoe-web -f
 
 # Check health (using our health check script)
-python src/pypoe/scripts/setup/pypoe_health_check.py --full
+python scripts/setup/pypoe_health_check.py --full
 ```
 
 ### Enhanced systemd Features:
@@ -246,7 +246,7 @@ netstat -tlnp | grep :8000
 ### Check PyPoe logs
 ```bash
 # Using daemon script
-python src/pypoe/scripts/setup/run_pypoe_daemon.py logs
+python scripts/setup/run_pypoe_daemon.py logs
 
 # Using systemd
 sudo journalctl -u pypoe-web -f
@@ -297,15 +297,15 @@ tailscale status
 2. **Navigate to PyPoe directory**
 3. **Run Tailscale setup**:
    ```bash
-   python src/pypoe/scripts/setup/setup_tailscale.py
+   python scripts/setup/setup_tailscale.py
    ```
 4. **Start daemon**:
    ```bash
-   python src/pypoe/scripts/setup/run_pypoe_daemon.py start
+   python scripts/setup/run_pypoe_daemon.py start
    ```
 5. **Verify it's running**:
    ```bash
-   python src/pypoe/scripts/setup/run_pypoe_daemon.py status
+   python scripts/setup/run_pypoe_daemon.py status
    ```
 6. **Log out of SSH** - the web server keeps running!
 7. **Access from anywhere** using the URLs shown above
@@ -318,7 +318,7 @@ tailscale status
 crontab -e
 
 # Add this line:
-@reboot cd /path/to/PyPoe && python src/pypoe/scripts/setup/run_pypoe_daemon.py start
+@reboot cd /path/to/PyPoe && python scripts/setup/run_pypoe_daemon.py start
 ```
 
 ### Using systemd (Linux)

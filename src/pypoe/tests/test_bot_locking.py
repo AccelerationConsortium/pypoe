@@ -39,7 +39,7 @@ class BotLockingTester:
         try:
             create_response = self.session.post(f"{BASE_URL}/api/conversation/new", json={
                 "title": "Bot Locking Test",
-                "bot_name": "Claude-3-Sonnet"
+                "bot_name": "Claude-Sonnet-4.6"
             })
             if create_response.status_code != 200:
                 return {"status": "fail", "error": f"Failed to create conversation: {create_response.status_code}"}
@@ -50,17 +50,17 @@ class BotLockingTester:
             # Step 2: Send first message with original bot
             first_message_response = self.session.post(
                 f"{BASE_URL}/api/conversation/{conversation_id}/send",
-                json={"message": "Hello, this is a test message", "bot_name": "Claude-3-Sonnet"}
+                json={"message": "Hello, this is a test message", "bot_name": "Claude-Sonnet-4.6"}
             )
             if first_message_response.status_code != 200:
                 return {"status": "fail", "error": f"Failed to send first message: {first_message_response.status_code}"}
             
-            print("✅ Sent first message with Claude-3-Sonnet")
+            print("✅ Sent first message with Claude-Sonnet-4.6")
             
             # Step 3: Try to send second message with different bot (should fail)
             second_message_response = self.session.post(
                 f"{BASE_URL}/api/conversation/{conversation_id}/send",
-                json={"message": "This should fail", "bot_name": "GPT-4"}
+                json={"message": "This should fail", "bot_name": "GPT-5.5"}
             )
             
             if second_message_response.status_code == 400:
@@ -70,8 +70,8 @@ class BotLockingTester:
                     return {
                         "status": "pass",
                         "conversation_id": conversation_id,
-                        "locked_to": "Claude-3-Sonnet",
-                        "attempted_change_to": "GPT-4",
+                        "locked_to": "Claude-Sonnet-4.6",
+                        "attempted_change_to": "GPT-5.5",
                         "error_message": error_detail
                     }
                 else:
@@ -90,7 +90,7 @@ class BotLockingTester:
         try:
             create_response = self.session.post(f"{BASE_URL}/api/conversation/new", json={
                 "title": "WebSocket Bot Locking Test",
-                "bot_name": "Claude-3-Haiku"
+                "bot_name": "Gemini-3-Flash"
             })
             if create_response.status_code != 200:
                 return {"status": "fail", "error": f"Failed to create conversation: {create_response.status_code}"}
@@ -112,7 +112,7 @@ class BotLockingTester:
                 # Send first message with original bot
                 first_message = {
                     "message": "Hello via WebSocket",
-                    "bot_name": "Claude-3-Haiku"
+                    "bot_name": "Gemini-3-Flash"
                 }
                 await websocket.send(json.dumps(first_message))
                 
@@ -128,12 +128,12 @@ class BotLockingTester:
                     except asyncio.TimeoutError:
                         break
                 
-                print("✅ Sent first message via WebSocket with Claude-3-Haiku")
+                print("✅ Sent first message via WebSocket with Gemini-3-Flash")
                 
                 # Step 3: Try to send second message with different bot (should fail)
                 second_message = {
                     "message": "This should fail via WebSocket",
-                    "bot_name": "GPT-4"
+                    "bot_name": "GPT-5.5"
                 }
                 await websocket.send(json.dumps(second_message))
                 
@@ -147,8 +147,8 @@ class BotLockingTester:
                         return {
                             "status": "pass",
                             "conversation_id": conversation_id,
-                            "locked_to": "Claude-3-Haiku",
-                            "attempted_change_to": "GPT-4",
+                            "locked_to": "Gemini-3-Flash",
+                            "attempted_change_to": "GPT-5.5",
                             "error_message": error_data.get("content")
                         }
                     else:
@@ -168,18 +168,18 @@ class BotLockingTester:
             # Create conversation with one bot
             create_response = self.session.post(f"{BASE_URL}/api/conversation/new", json={
                 "title": "New Conversation Test",
-                "bot_name": "GPT-4"
+                "bot_name": "GPT-4-Turbo"
             })
             if create_response.status_code != 200:
                 return {"status": "fail", "error": f"Failed to create conversation: {create_response.status_code}"}
             
             conversation_id = create_response.json().get("conversation_id")
-            print(f"✅ Created conversation with GPT-4: {conversation_id}")
+            print(f"✅ Created conversation with GPT-4-Turbo: {conversation_id}")
             
             # Send first message (this should work since conversation has no messages yet)
             first_message_response = self.session.post(
                 f"{BASE_URL}/api/conversation/{conversation_id}/send",
-                json={"message": "First message", "bot_name": "Claude-3-Sonnet"}
+                json={"message": "First message", "bot_name": "Claude-Sonnet-4.6"}
             )
             
             if first_message_response.status_code == 200:
@@ -187,8 +187,8 @@ class BotLockingTester:
                 return {
                     "status": "pass",
                     "conversation_id": conversation_id,
-                    "original_bot": "GPT-4",
-                    "selected_bot": "Claude-3-Sonnet"
+                    "original_bot": "GPT-4-Turbo",
+                    "selected_bot": "Claude-Sonnet-4.6"
                 }
             else:
                 return {"status": "fail", "error": f"New conversation bot selection failed: {first_message_response.status_code}"}

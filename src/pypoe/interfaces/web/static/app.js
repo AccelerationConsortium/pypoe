@@ -525,7 +525,7 @@ class PyPoeApp {
         try {
             this.websocket.send(JSON.stringify({
                 message: message,
-                bot_name: this.globalBotSelect ? this.globalBotSelect.value : 'GPT-3.5-Turbo'
+                bot_name: this.globalBotSelect ? this.globalBotSelect.value : null
             }));
             
             // Set timeout to re-enable input if no response comes

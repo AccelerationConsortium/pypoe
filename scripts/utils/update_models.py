@@ -6,7 +6,7 @@ This interactive script tests which Poe models are currently working and helps y
 update your model configuration by commenting out non-working models.
 
 Usage:
-    python -m pypoe.scripts.utils.update_models
+    python scripts/utils/update_models.py
 
 The script will:
 1. Import the actual model list from PyPoe core client
@@ -118,12 +118,12 @@ class ModelTester:
             # Use asyncio.wait_for with timeout
             async def get_response():
                 nonlocal response
-            async for chunk in client.send_message(
-                "Hello! Please respond with just 'Working' to confirm you're accessible.",
-                bot_name=model_name,
-                save_history=False
-            ):
-                response += chunk
+                async for chunk in client.send_message(
+                    "Hello! Please respond with just 'Working' to confirm you're accessible.",
+                    bot_name=model_name,
+                    save_history=False
+                ):
+                    response += chunk
                     # Stop after getting a reasonable response (first 50 chars)
                     if len(response) > 50:
                         break
@@ -202,12 +202,12 @@ class ModelTester:
                 'success': success,
                 'response': response,
                 'response_time': response_time
-                }
-                
+            }
+
             if success:
                 results['successful'] += 1
                 self.working_models.append(model_name)
-                else:
+            else:
                 results['failed'] += 1
                 self.failed_models.append(model_name)
                 

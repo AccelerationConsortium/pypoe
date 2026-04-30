@@ -36,7 +36,7 @@ Team collaboration via Slack workspace integration:
 
 ## 🗄️ Unified History Database
 
-**All three interfaces share the same SQLite database** (`users/history/pypoe_history.db`), which means:
+**All three interfaces share the same SQLite database** (`~/.pypoe/single_webchat_history.db`), which means:
 
 ✅ **Cross-Platform Continuity**: Start a conversation in CLI, continue in Slack, review in web  
 ✅ **Unified Search**: Search all conversations regardless of origin  
@@ -252,16 +252,16 @@ You can still use the original daemon script if preferred:
 
 ```bash
 # Start the daemon
-python src/pypoe/scripts/setup/run_pypoe_daemon.py start
+python scripts/setup/run_pypoe_daemon.py start
 
 # Check status
-python src/pypoe/scripts/setup/run_pypoe_daemon.py status
+python scripts/setup/run_pypoe_daemon.py status
 
 # View logs
-python src/pypoe/scripts/setup/run_pypoe_daemon.py logs
+python scripts/setup/run_pypoe_daemon.py logs
 
 # Stop the daemon
-python src/pypoe/scripts/setup/run_pypoe_daemon.py stop
+python scripts/setup/run_pypoe_daemon.py stop
 ```
 
 #### Method 3: Using nohup (Simple)
@@ -286,7 +286,7 @@ For production Linux servers:
 
 ```bash
 # Copy service file (adjust paths as needed)
-sudo cp src/pypoe/scripts/setup/pypoe-web.service /etc/systemd/system/
+sudo cp scripts/setup/pypoe-web.service /etc/systemd/system/
 
 # Edit paths in service file
 sudo nano /etc/systemd/system/pypoe-web.service
@@ -312,7 +312,7 @@ Run the Slack bot as a background service:
 nohup pypoe slack-bot --enable-history > ~/pypoe-slack.log 2>&1 &
 
 # Method 2: Using the daemon script pattern
-# (Create similar script based on src/pypoe/scripts/setup/run_pypoe_daemon.py)
+# (Create similar script based on scripts/setup/run_pypoe_daemon.py)
 
 # Check if running
 ps aux | grep "pypoe slack-bot"
@@ -430,8 +430,8 @@ top -p $(pgrep -f pypoe)
 ### Environment Variables
 ```env
 # Core Configuration
-POE_API_KEY="your-api-key"                    # Required
-DATABASE_PATH="users/history/pypoe_history.db" # Optional
+POE_API_KEY="your-api-key"                          # Required
+DATABASE_PATH="~/.pypoe/single_webchat_history.db"  # Optional
 
 # Web Interface  
 PYPOE_HOST="localhost"                        # Default: localhost
@@ -489,22 +489,22 @@ pytest tests/test_client.py -v
 ### Project Structure
 ```
 pypoe/
-├── src/pypoe/
-│   ├── core/               # Core functionality
-│   │   ├── cli.py         # Command line interface
+├── src/pypoe/             # Installable Python package
+│   ├── core/              # Core functionality
+│   │   ├── cli.py         # Command line entry point
 │   │   ├── config.py      # Configuration management
-│   │   ├── client.py      # Core Poe API client
+│   │   ├── client.py      # Poe API client
 │   │   ├── history.py     # Conversation history manager
 │   │   └── logging_db.py  # Database logging utilities
-│   ├── interfaces/         # Web and Slack interfaces
+│   ├── interfaces/        # Web and Slack interfaces
 │   │   ├── web/           # Web interface (FastAPI)
 │   │   ├── slack/         # Slack bot integration
-│   │   └── cli/           # CLI interface application
-│   ├── scripts/           # Setup utilities and examples
-│   └── docs/              # Documentation files
-├── users/                 # User data and history
-│   └── history/          # Shared conversation database
-└── tests/                # Test suite
+│   │   └── cli/           # Interactive CLI (legacy, pending removal)
+│   └── tests/             # Test suite
+├── scripts/               # Ops scripts (daemon, health check, debug helpers)
+├── examples/              # Sample SDK usage scripts
+├── docs/                  # Documentation
+└── ~/.pypoe/              # User data (SQLite history DB, .env override)
 ```
 
 ## 🔒 Security Notes
@@ -531,13 +531,13 @@ pypoe/
 
 For detailed setup and configuration guides:
 
-- **📖 [Complete Documentation](src/pypoe/docs/README.md)** - Start here for comprehensive guides
-- **🚀 [Setup Guide](src/pypoe/docs/README_SETUP.md)** - Installation and configuration
-- **🤖 [Slack Bot Guide](src/pypoe/docs/README_SLACK.md)** - Slack integration setup
-- **⚙️ [Daemon Guide](src/pypoe/docs/README_DAEMON.md)** - Background service management
+- **📖 [Complete Documentation](docs/README.md)** - Start here for comprehensive guides
+- **🚀 [Setup Guide](docs/README_SETUP.md)** - Installation and configuration
+- **🤖 [Slack Bot Guide](docs/README_SLACK.md)** - Slack integration setup
+- **⚙️ [Daemon Guide](docs/README_DAEMON.md)** - Background service management
 
 ## 🆘 Support
 
 - **Issues**: [GitHub Issues](https://github.com/AccelerationConsortium/pypoe/issues)
-- **Documentation**: Check [src/pypoe/docs/](src/pypoe/docs/) for comprehensive guides
+- **Documentation**: Check [docs/](docs/) for comprehensive guides
 - **API Reference**: [Poe API Documentation](https://creator.poe.com/docs/quick-start)
