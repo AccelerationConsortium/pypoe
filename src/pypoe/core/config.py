@@ -14,6 +14,9 @@ class Config:
     # default so chat-only deployments don't need aiohttp. Enable with
     # PYPOE_ENABLE_MEDIA=true and install the [media] extra.
     enable_media: bool = False
+    # Hide model reasoning blocks from Slack display while keeping full
+    # responses in history. Enable with PYPOE_SLACK_HIDE_THINKING=true.
+    slack_hide_thinking: bool = False
 
     def __post_init__(self):
         # Try to load .env from multiple locations
@@ -27,6 +30,10 @@ class Config:
         self.web_username = os.getenv("PYPOE_WEB_USERNAME", self.web_username)
         self.web_password = os.getenv("PYPOE_WEB_PASSWORD", self.web_password)
         self.enable_media = _parse_bool(os.getenv("PYPOE_ENABLE_MEDIA"), self.enable_media)
+        self.slack_hide_thinking = _parse_bool(
+            os.getenv("PYPOE_SLACK_HIDE_THINKING"),
+            self.slack_hide_thinking,
+        )
 
         # Ensure the ~/.pypoe directory exists
         pypoe_dir = Path(self.database_path).parent

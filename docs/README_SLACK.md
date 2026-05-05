@@ -96,7 +96,13 @@ SLACK_BOT_TOKEN=xoxb-your-bot-token
 SLACK_SIGNING_SECRET=your-signing-secret
 SLACK_APP_TOKEN=xapp-your-app-token
 SLACK_SOCKET_MODE=true
+PYPOE_SLACK_HIDE_THINKING=true  # optional: hide model reasoning blocks in Slack
 ```
+
+`PYPOE_SLACK_HIDE_THINKING=true` removes model reasoning blocks such as
+`<think>...</think>` and Slack-rendered `Thinking...` quote blocks from
+Slack-visible replies. The full model response is still saved in conversation
+history.
 
 Install the dependencies (the same extra ships both the web UI and
 Slack stack):

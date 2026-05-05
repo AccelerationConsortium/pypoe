@@ -17,6 +17,7 @@ This module can be imported and used in various ways:
 
 import asyncio
 import os
+import re
 import json
 import time
 from datetime import datetime, timedelta
@@ -151,6 +152,7 @@ class PyPoeSlackBot:
         
         # Initialize PyPoe client
         self.config = get_config()
+        self.hide_thinking_in_slack = self.config.slack_hide_thinking
         self.poe_client = PoeChatClient(enable_history=False)  # We'll handle history ourselves
         
         # Use HistoryManager for persistent storage
@@ -1060,8 +1062,28 @@ class PyPoeSlackBot:
 💡 *Each conversation context maintains separate history*
 """
     
+    @staticmethod
+    def _hide_thinking_for_slack(response: str) -> str:
+        """Remove model reasoning blocks from Slack-visible output."""
+        thinking_block_pattern = re.compile(
+            r"<(think|thinking|reasoning)\b[^>]*>.*?</\1>",
+            re.IGNORECASE | re.DOTALL,
+        )
+        redacted = thinking_block_pattern.sub("", response)
+        markdown_thinking_pattern = re.compile(
+            r"^\s*(?:\*\*)?thinking(?:\.\.\.|…)?(?:\*\*)?\s*\n+"
+            r"(?:>[^\n]*(?:\n|$))+",
+            re.IGNORECASE,
+        )
+        redacted = markdown_thinking_pattern.sub("", redacted)
+        redacted = re.sub(r"\n{3,}", "\n\n", redacted).strip()
+        return redacted or "_(thinking hidden)_"
+
     def _format_response_for_slack(self, response: str, model: str, chat_mode: str) -> str:
         """Format the AI response for Slack with context info"""
+        if getattr(self, "hide_thinking_in_slack", False):
+            response = self._hide_thinking_for_slack(response)
+
         # Truncate very long responses
         if len(response) > 3000:
             response = response[:2950] + "\n\n... *(response truncated)*"
