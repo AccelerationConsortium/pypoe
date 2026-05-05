@@ -1,236 +1,250 @@
-# PyPoe Slack Bot Setup Guide
+# PyPoe Slack Bot
 
-Simple guide for setting up the PyPoe Slack bot for local development and testing.
+How to create the Slack app, configure it, run the bot, and how PyPoe
+scopes Slack conversations into the shared history database.
 
-## 🔒 **Local Development Setup**
+The bot connects via Slack Socket Mode and is implemented in
+[src/pypoe/interfaces/slack/bot.py](../src/pypoe/interfaces/slack/bot.py).
+For service management (start/stop/logs as systemd) see
+[README_SYSTEMD.md](README_SYSTEMD.md). For the underlying history
+schema see [README_HISTORY.md](README_HISTORY.md).
 
-### Step 1: Create Your Private Test Workspace
-1. Go to https://slack.com/create
-2. Create a new workspace with your personal email
-3. Name it "PyPoe Testing" or similar
+## Create the Slack app
 
-### Step 2: Create Slack App in Test Workspace
-1. Go to https://api.slack.com/apps
-2. Click **"Create New App"** → **"From scratch"**
-3. **App Name**: `PyPoe-tests`
-4. **Workspace**: Select your NEW test workspace
-5. Click **"Create App"**
+1. Visit <https://api.slack.com/apps>, click **Create New App** →
+   **From scratch**.
+2. Name the app `PyPoe`; pick your workspace.
 
-### Step 3: Configure Your Slack App (Socket Mode)
+### Enable Socket Mode
 
-#### A. Enable Socket Mode (Easier for Local Development)
-1. Go to **"Socket Mode"** in left sidebar
-2. Toggle **"Enable Socket Mode"** to **ON**
-3. Under "App Token", click **"Generate Token and Scopes"**
-4. **Token Name**: `pypoe-socket`
-5. **Add scope**: `connections:write`
-6. Click **"Generate"**
-7. **Copy the App Token** (starts with `xapp-`)
+Socket Mode lets the bot connect outbound, so no public callback URL is
+required.
 
-#### B. Set Bot Permissions
-1. Go to **"OAuth & Permissions"**
-2. Under **"Bot Token Scopes"**, add these permissions:
-   - `app_mentions:read` - Read when bot is mentioned
-   - `channels:history` - Read channel message history
-   - `channels:read` - View basic channel info
-   - `chat:write` - Send messages
-   - `commands` - Use slash commands
-   - `groups:history` - Read private channel history
-   - `im:history` - Read direct message history
-   - `im:read` - View direct message info
-   - `im:write` - Send direct messages
-   - `mpim:history` - Read group DM history
+1. **Settings → Socket Mode**: turn on **Enable Socket Mode**.
+2. Generate an app-level token with the scope `connections:write`.
+3. Save the token (starts with `xapp-`) — this becomes `SLACK_APP_TOKEN`.
 
-#### C. Enable Direct Messaging
-1. Go to **"App Home"** in left sidebar
-2. Scroll to **"Show Tabs"**
-3. ✅ Check **"Allow users to send Slash commands and messages from the messages tab"**
-4. Click **"Save Changes"**
+### OAuth scopes
 
-#### D. Install to Test Workspace
-1. Go back to **"OAuth & Permissions"**
-2. Click **"Install to Workspace"**
-3. Click **"Allow"**
-4. **Copy the Bot User OAuth Token** (starts with `xoxb-`)
+**Features → OAuth & Permissions → Bot Token Scopes**:
 
-#### E. Get Signing Secret
-1. Go to **"Basic Information"**
-2. Under **"App Credentials"**
-3. **Copy the Signing Secret**
-
-### Step 4: Set Up Environment
-
-Create environment file:
-```bash
-# Copy template and edit
-cp pypoe.env.example .env
+```text
+app_mentions:read
+channels:history
+chat:write
+commands
+groups:history
+im:history
+im:read
+im:write
+mpim:history
 ```
 
-Edit `.env` with your values:
-```bash
-# Poe API Key (get from poe.com/api_key)
+- `commands` enables `/poe`.
+- `app_mentions:read` enables `@PyPoe`.
+- `im:*` covers DMs; `mpim:history` and `groups:history` cover group
+  DMs and private channels.
+
+### Slash command
+
+**Features → Slash Commands → Create New Command**:
+
+```text
+Command:           /poe
+Request URL:       https://example.com/slack/events    (unused in Socket Mode but required)
+Short Description: Chat with Poe models through PyPoe
+```
+
+### Event subscriptions
+
+**Features → Event Subscriptions → Subscribe to bot events**:
+
+```text
+app_mention
+message.im
+```
+
+### App Home
+
+**Features → App Home → Show Tabs**:
+
+1. Enable the **Messages Tab**.
+2. Tick **Allow users to send Slash commands and messages from the
+   messages tab**.
+
+Without this, Slack reports "Sending messages to this app has been
+turned off" when users try to DM the bot.
+
+### Install to the workspace
+
+**Features → OAuth & Permissions → Install to Workspace**. After
+approving, copy:
+
+- **Bot User OAuth Token** (starts with `xoxb-`) → `SLACK_BOT_TOKEN`.
+- **Basic Information → Signing Secret** → `SLACK_SIGNING_SECRET`.
+
+Reinstall the app whenever you change scopes, slash commands, event
+subscriptions, or App Home settings.
+
+## `.env` configuration
+
+Add these to the repo-root `.env`:
+
+```env
 POE_API_KEY=your-poe-api-key
-
-# Slack Bot Token (from OAuth & Permissions)
 SLACK_BOT_TOKEN=xoxb-your-bot-token
-
-# Slack Signing Secret (from Basic Information)
 SLACK_SIGNING_SECRET=your-signing-secret
-
-# Slack App Token (for Socket Mode development)
 SLACK_APP_TOKEN=xapp-your-app-token
-
-# Use Socket Mode for local development
 SLACK_SOCKET_MODE=true
-
-# Optional settings
-ENABLE_HISTORY=true
 ```
 
-### Step 5: Install PyPoe with Slack Integration
-
-First, install PyPoe with full functionality (Slack bot requires the web interface):
+Install the dependencies (the same extra ships both the web UI and
+Slack stack):
 
 ```bash
-# Install PyPoe with complete functionality (Slack + Web + CLI)
-pip install -e ".[all]"
+pip install -e ".[web-ui]"
 ```
 
-This will automatically install all required dependencies:
-- `slack-bolt` - Slack app framework
-- `slack-sdk` - Slack SDK for Python
-- `gunicorn` & `uvicorn` - ASGI servers (for future HTTP mode)
+## Run it
 
-### Step 6: Run Your Bot Locally
+Foreground (good for iteration):
 
 ```bash
-# Load environment and run
-source .env && pypoe slack-bot
+pypoe slack
 ```
 
-You should see:
-```
-🚀 Starting PyPoe Slack Bot...
-📋 Configuration:
-   POE_API_KEY: ✅ Set
-   SLACK_BOT_TOKEN: ✅ Set
-   Socket Mode: True
-   History Enabled: True
-⚡️ Bolt app is running!
-```
+As a systemd service: see [README_SYSTEMD.md](README_SYSTEMD.md). Quick
+recap:
 
-**Keep this terminal running** - your bot is now online!
-
-### Step 7: Test in Slack
-
-In your test workspace:
-
-1. **Invite bot to channel**: `/invite @pypoe-tests`
-
-2. **Test commands**:
-   - `@pypoe-tests hello`
-   - `/poe help`
-   - `/poe models`
-   - `/poe chat Tell me a joke`
-
-3. **Test Direct Messages**:
-   - Click on **PyPoe-tests** in your workspace
-   - Send: `hello`
-
----
-
-## 🎯 **Available Commands**
-
-### Slash Commands
-- `/poe help` - Show help message
-- `/poe models` - List available AI models
-- `/poe chat <message>` - Send a message to the AI
-- `/poe set-model <model>` - Switch to a different model
-- `/poe usage` - Check your usage statistics
-- `/poe reset` - Reset conversation history
-
-### Direct Mentions
-- `@pypoe hello` - Start a conversation
-- `@pypoe <message>` - Send any message
-
-### Direct Messages
-- Send any message directly to the bot
-
----
-
-## 🔧 **Troubleshooting**
-
-### Bot Not Responding?
-1. **Check environment variables are set**
-2. **Ensure bot is invited to channel**: `/invite @pypoe-tests`
-3. **Check bot logs** in your terminal for error messages
-4. **Restart the bot** after changing Slack app permissions
-
-### Direct Message Issues?
-1. **Reload Slack client**: `Ctrl+R` (Windows/Linux) or `Cmd+R` (Mac)
-2. **Check App Home settings**: "Allow users to send messages" must be enabled
-3. **Reinstall app** after permission changes
-4. **Try mentioning bot in channel first**: `@pypoe-tests hello`
-
-### Socket Mode Issues
-- Make sure Socket Mode is enabled in Slack app
-- Verify SLACK_APP_TOKEN is correct
-- Try restarting the bot
-
-### Common Errors
-
-**"Messaging has been turned off"**
-- Enable App Home messaging in Slack app settings
-- Reload Slack client after changes
-
-**"Import errors"**
 ```bash
-# Install PyPoe with Slack integration
-pip install -e ".[slack]"
-
-# Or verify installation
-pip show pypoe slack-bolt slack-sdk
+systemctl --user start pypoe-slack
+journalctl --user -u pypoe-slack -f
 ```
 
-**"Bot doesn't respond"**
-- Check all environment variables are set correctly
-- Make sure the bot is running (terminal shows "Bolt app is running!")
-- Verify bot is invited to the channel
+If you're editing bot code, stop the service first so there's only one
+Socket Mode connection:
 
----
-
-## 📊 **Usage Analytics**
-
-The bot tracks:
-- **Messages sent per user**
-- **Models used**
-- **Daily usage statistics**
-- **Estimated compute points**
-
-Access via `/poe usage` command or check bot logs in your terminal.
-
----
-
-## 🎉 **You're Ready!**
-
-### To run your bot:
 ```bash
-source .env && pypoe slack-bot
+systemctl --user stop pypoe-slack
+# ...edit, run python -m compileall -q src/pypoe and your tests...
+systemctl --user start pypoe-slack
 ```
 
-### To stop your bot:
-Press `Ctrl+C` in the terminal
+## How conversation context is scoped
 
-### Need Help?
-- Test functionality: `python tests/test_slack_bot.py`
-- Check bot status: `pypoe slack-bot --help`
-- Validate setup: Ensure all environment variables are set
+Each Slack interaction maps to one stable conversation id in
+`~/.pypoe/single_webchat_history.db`. **Thread always wins when
+present**:
 
----
+- Any message inside a Slack thread (channel, private channel, group,
+  mpim, *or DM thread*) is one isolated conversation, keyed
+  `slack_thread_<channel_id>_<thread_ts>`.
+- A DM at the top level (no thread) maps to one persistent
+  per-user conversation, keyed `slack_dm_<user_id>`.
 
-## 📚 **Additional Resources**
+Concrete entry points:
 
-- [Poe API Documentation](https://creator.poe.com/docs/quick-start)
-- [Slack API Documentation](https://api.slack.com/start/overview)
+- `/poe chat <message>` at the top level of a channel — the bot posts a
+  public placeholder; that message's `ts` becomes the thread root, and
+  the model's response replaces the placeholder via `chat.update`.
+  Continue with `@PyPoe …` in the thread.
+- `/poe chat <message>` from inside an existing thread — the existing
+  thread is reused.
+- `@PyPoe <message>` mentioned inside a thread — that thread continues.
+- `@PyPoe <message>` mentioned at the top level — a new thread starts
+  rooted at the user's mention.
+- A DM message sent as a thread reply — the bot's reply lands in that
+  same DM thread; that thread is its own context, separate from your
+  top-level DM history.
 
-**Happy chatting with your PyPoe Slack bot!** 🤖✨ 
+Per-thread commands (`/poe reset`, `/poe context`, `/poe stats`,
+`/poe set-model`) need an active thread. Run them from a DM, or from
+inside an existing PyPoe thread. The bot will explain when there's no
+thread to act on.
+
+### `/poe` autocomplete in threads
+
+Slack hides slash-command autocomplete inside threads of private
+channels and mpim/group DMs. The command still works if you type
+`/poe chat hello` and submit, but the autocomplete-friendly path inside
+a thread is to **@-mention** the bot:
+
+```text
+@PyPoe what's next?
+```
+
+For private channels and mpims, the bot has to be in the conversation;
+run `/invite @PyPoe` once. After that, both mentions and slash commands
+work.
+
+## Testing in Slack
+
+Slash commands:
+
+```text
+/poe help
+/poe models
+/poe chat hello
+/poe set-model Claude-Sonnet-4.6   # only valid in DM or inside a thread
+/poe usage
+/poe reset                         # only valid in DM or inside a thread
+```
+
+Mentions:
+
+```text
+@PyPoe hello                       # starts (or continues) a thread
+```
+
+Direct messages: just type to the bot.
+
+## One-shot history cleanup
+
+A guarded cleanup deletes Slack-scoped rows from the history db on
+startup. Use it once after upgrading from older versions that produced
+orphan rows:
+
+```bash
+PYPOE_SLACK_WIPE_ON_START=1 systemctl --user restart pypoe-slack
+# unset the variable (or restart again) so future restarts don't wipe
+systemctl --user restart pypoe-slack
+```
+
+This deletes only:
+
+- `conversations` whose `chat_mode LIKE 'slack_%'`.
+- `messages` whose `conversation_id LIKE 'slack_%'` or whose parent
+  conversation has `chat_mode LIKE 'slack_%'`.
+
+Web/CLI history is not touched.
+
+## Troubleshooting
+
+```bash
+systemctl --user status pypoe-slack
+journalctl --user -u pypoe-slack -n 100 --no-pager
+```
+
+Validate that `.env` is being picked up without printing secrets:
+
+```bash
+python - <<'PY'
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+load_dotenv(Path.cwd() / ".env")
+for name in ("POE_API_KEY", "SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET", "SLACK_APP_TOKEN"):
+    value = os.getenv(name, "")
+    print(f"{name}:", "set" if value else "missing")
+PY
+```
+
+| Symptom | First thing to check |
+|---------|----------------------|
+| Bot ignores DMs | App Home → Messages Tab + "Allow Slash commands and messages" must be on; reinstall if you just toggled it. |
+| `/poe` not recognised | Slash command exists in the app config; reinstall the app; restart `pypoe-slack`. |
+| `@PyPoe` ignored | `app_mention` event subscription enabled; bot invited to the channel (`/invite @PyPoe`). |
+| "Sending messages to this app has been turned off" | App Home messages tab disabled; enable + reinstall + reload Slack. |
+| Bot replies at the channel top level instead of in a thread | Older code or stale process; `systemctl --user restart pypoe-slack` and confirm with `systemctl --user status pypoe-slack` (Active line should be a recent timestamp). |
+| Many duplicate "tabs" appearing in history | Pre-thread-scoping data; run the `PYPOE_SLACK_WIPE_ON_START=1` cleanup. |

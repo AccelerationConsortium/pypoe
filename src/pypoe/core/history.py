@@ -130,7 +130,14 @@ class HistoryManager:
                         FOREIGN KEY(message_id) REFERENCES messages(id)
                     )
                 """)
-                
+
+                # Per-thread Slack scoping creates many small conversations,
+                # so messages.conversation_id is read on every chat turn.
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_messages_conversation_id "
+                    "ON messages(conversation_id)"
+                )
+
                 # Handle migration from basic schema to enhanced schema
                 await self._migrate_basic_to_enhanced(db)
                 
@@ -307,13 +314,28 @@ class HistoryManager:
             print(f"Warning: Failed to download media from {url}: {e}")
             return None
 
-    async def create_conversation(self, title: str, bot_name: str, chat_mode: str = "chatbot", topic: str = None) -> str:
-        """Creates a new conversation with enhanced metadata."""
-        conversation_id = str(uuid.uuid4())
+    async def create_conversation(
+        self,
+        title: str,
+        bot_name: str,
+        chat_mode: str = "chatbot",
+        topic: str = None,
+        conversation_id: Optional[str] = None,
+    ) -> str:
+        """Creates a new conversation with enhanced metadata.
+
+        If ``conversation_id`` is provided, that exact id is used and the
+        insert is idempotent (re-creating with the same id is a no-op).
+        This lets callers like the Slack bot key conversations by stable,
+        externally-meaningful ids (e.g. ``slack_thread_<chan>_<ts>``)
+        instead of receiving a fresh UUID each call.
+        """
+        conversation_id = conversation_id or str(uuid.uuid4())
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
-                    "INSERT INTO conversations (id, title, topic, bot_name, chat_mode) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO conversations "
+                    "(id, title, topic, bot_name, chat_mode) VALUES (?, ?, ?, ?, ?)",
                     (conversation_id, title, topic, bot_name, chat_mode)
                 )
                 await db.commit()

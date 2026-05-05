@@ -52,17 +52,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SlackConversationContext:
-    """Track Slack-specific conversation context"""
+    """Track Slack-specific conversation context.
+
+    For channels/groups/mpims we scope a conversation to a single Slack
+    thread; ``thread_ts`` is the ts of the thread root message. For DMs
+    ``thread_ts`` is ``None`` and the context is keyed per-user.
+    """
     conversation_id: str
     user_id: str
     channel_id: str
-    channel_type: str  # 'im', 'public_channel', 'private_channel', 'group'
-    chat_mode: str     # 'slack_dm', 'slack_channel_shared', 'slack_channel_individual'
+    channel_type: str  # 'im', 'public_channel', 'private_channel', 'group', 'mpim'
+    chat_mode: str     # 'slack_dm' or 'slack_thread'
+    thread_ts: Optional[str] = None
     preferred_model: str = DEFAULT_CHAT_MODEL
     last_activity: datetime = None
     max_context_messages: int = 50  # Default message limit
     max_context_tokens: int = 12000  # Default token limit (conservative)
-    
+
     def __post_init__(self):
         if self.last_activity is None:
             self.last_activity = datetime.now()
@@ -192,92 +198,161 @@ class PyPoeSlackBot:
         self._setup_handlers()
     
     async def initialize(self):
-        """Initialize the bot and fetch available models"""
+        """Initialize the bot and fetch available models."""
         try:
             self.available_models = await self.poe_client.get_available_bots()
             if self.history:
                 await self.history.initialize()
-            logger.info(f"✅ Initialized with {len(self.available_models)} available models")
+                # One-shot cleanup of rows produced by the pre-thread-scoping
+                # bot (orphan messages keyed by stable Slack ids that no
+                # conversation row ever matched, plus the random-UUID
+                # conversations created on every /poe invocation).
+                if os.environ.get("PYPOE_SLACK_WIPE_ON_START", "").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                ):
+                    await self._wipe_slack_history_rows()
+            logger.info(
+                f"✅ Initialized with {len(self.available_models)} available models"
+            )
         except Exception as e:
             logger.error(f"❌ Failed to initialize: {e}")
             self.available_models = list(CHAT_MODELS)
-    
-    def _determine_conversation_strategy(self, channel_type: str, user_id: str, channel_id: str) -> tuple[str, str, str]:
+
+    async def _wipe_slack_history_rows(self) -> None:
+        """Delete Slack-originated rows from the history database.
+
+        Runs only when ``PYPOE_SLACK_WIPE_ON_START`` is truthy. Targets:
+          * conversations with ``chat_mode LIKE 'slack_%'``
+          * any messages still keyed by a ``slack_%`` conversation_id
+            (orphans left by the previous broken create-conversation flow)
         """
-        Determine conversation strategy based on channel type and user preferences.
-        
+        if not self.history:
+            return
+        try:
+            import aiosqlite
+
+            async with aiosqlite.connect(self.history.db_path) as db:
+                cursor = await db.execute(
+                    "SELECT COUNT(*) FROM conversations WHERE chat_mode LIKE 'slack_%'"
+                )
+                (conv_count,) = await cursor.fetchone()
+
+                cursor = await db.execute(
+                    "SELECT COUNT(*) FROM messages "
+                    "WHERE conversation_id IN ("
+                    "  SELECT id FROM conversations WHERE chat_mode LIKE 'slack_%'"
+                    ") OR conversation_id LIKE 'slack_%'"
+                )
+                (msg_count,) = await cursor.fetchone()
+
+                await db.execute(
+                    "DELETE FROM messages "
+                    "WHERE conversation_id IN ("
+                    "  SELECT id FROM conversations WHERE chat_mode LIKE 'slack_%'"
+                    ") OR conversation_id LIKE 'slack_%'"
+                )
+                await db.execute(
+                    "DELETE FROM conversations WHERE chat_mode LIKE 'slack_%'"
+                )
+                await db.commit()
+
+            logger.info(
+                "🧹 PYPOE_SLACK_WIPE_ON_START: removed %d Slack conversations "
+                "and %d associated/orphan messages",
+                conv_count,
+                msg_count,
+            )
+        except Exception:
+            logger.exception("Failed to wipe Slack history rows")
+    
+    @staticmethod
+    def _determine_conversation_strategy(
+        channel_type: str,
+        user_id: str,
+        channel_id: str,
+        thread_ts: Optional[str] = None,
+    ) -> tuple[str, str, str]:
+        """
+        Determine conversation strategy based on Slack thread + channel type.
+
+        Scoping (thread takes precedence so threads are always isolated):
+          * Any conversation type with ``thread_ts`` set (channel, group,
+            mpim, *or DM threads*): per-thread,
+            ``slack_thread_{channel_id}_{thread_ts}``.
+          * DM (``channel_type == "im"``) without ``thread_ts``: per-user,
+            ``slack_dm_{user_id}`` — one persistent conversation per user.
+          * Anything else without a thread is invalid (channel/group/mpim
+            callers always derive a ``thread_ts``).
+
         Returns:
             (conversation_id, chat_mode, title)
         """
+        if thread_ts:
+            conversation_id = f"slack_thread_{channel_id}_{thread_ts}"
+            chat_mode = "slack_thread"
+            title = f"Slack Thread: {channel_id}/{thread_ts}"
+            return conversation_id, chat_mode, title
+
         if channel_type == "im":
-            # Direct Message: Each user gets their own persistent conversation
             conversation_id = f"slack_dm_{user_id}"
             chat_mode = "slack_dm"
             title = f"Slack DM: @{user_id}"
-            
-        elif channel_type in ["public_channel", "private_channel", "group"]:
-            # Group Channel: Two strategies possible
-            
-            # Strategy 1: Shared conversation (all users share context)
-            conversation_id = f"slack_channel_{channel_id}"
-            chat_mode = "slack_channel_shared"
-            title = f"Slack Channel: {channel_id}"
-            
-            # Strategy 2: Individual conversations per user in channel (better privacy)
-            # conversation_id = f"slack_channel_{channel_id}_{user_id}"
-            # chat_mode = "slack_channel_individual"
-            # title = f"Slack Channel: {channel_id} - @{user_id}"
-            
-        else:
-            # Fallback
-            conversation_id = f"slack_unknown_{user_id}_{channel_id}"
-            chat_mode = "slack_unknown"
-            title = f"Slack: @{user_id} in {channel_id}"
-        
-        return conversation_id, chat_mode, title
-    
-    async def _get_or_create_conversation_context(self, user_id: str, channel_id: str, channel_type: str) -> SlackConversationContext:
+            return conversation_id, chat_mode, title
+
+        # Non-DM callers (channel/group/mpim) always derive a thread_ts
+        # from the event or the bot's own placeholder post; reaching this
+        # branch means a caller forgot to pass one.
+        raise ValueError(
+            "thread_ts is required for non-DM Slack conversation contexts"
+        )
+
+    async def _get_or_create_conversation_context(
+        self,
+        user_id: str,
+        channel_id: str,
+        channel_type: str,
+        thread_ts: Optional[str] = None,
+    ) -> SlackConversationContext:
         """Get or create conversation context with database persistence."""
-        
-        conversation_id, chat_mode, title = self._determine_conversation_strategy(channel_type, user_id, channel_id)
-        
+
+        conversation_id, chat_mode, title = self._determine_conversation_strategy(
+            channel_type, user_id, channel_id, thread_ts
+        )
+
         # Check if context already exists in memory
         if conversation_id in self.conversation_contexts:
             context = self.conversation_contexts[conversation_id]
             context.last_activity = datetime.now()
             return context
-        
-        # Check if conversation exists in database
+
+        # Ensure the parent conversation row exists so messages aren't orphaned.
+        # ``create_conversation`` is idempotent for explicit ids (INSERT OR IGNORE),
+        # so calling it on every cold lookup is safe and cheap.
         if self.history:
             try:
-                conversations = await self.history.get_conversations()
-                existing_conv = next((c for c in conversations if c['id'] == conversation_id), None)
-                
-                if not existing_conv:
-                    # Create new conversation in database
-                    await self.history.create_conversation(
-                        title=title,
-                        bot_name=DEFAULT_CHAT_MODEL,
-                        chat_mode=chat_mode
-                    )
-                    # Note: We use our own conversation_id instead of the returned UUID
-                    # This ensures consistent Slack-based IDs
-                    
+                await self.history.create_conversation(
+                    title=title,
+                    bot_name=DEFAULT_CHAT_MODEL,
+                    chat_mode=chat_mode,
+                    conversation_id=conversation_id,
+                )
             except Exception as e:
-                logger.error(f"Failed to check/create conversation in database: {e}")
-        
-        # Create context in memory
+                logger.error(f"Failed to ensure conversation row in database: {e}")
+
         context = SlackConversationContext(
             conversation_id=conversation_id,
             user_id=user_id,
             channel_id=channel_id,
             channel_type=channel_type,
-            chat_mode=chat_mode
+            chat_mode=chat_mode,
+            thread_ts=thread_ts,
         )
-        
+
         # Set appropriate context limits for the default model
         self._update_context_limits_for_model(context)
-        
+
         self.conversation_contexts[conversation_id] = context
         return context
     
@@ -300,183 +375,370 @@ class PyPoeSlackBot:
                 await self._handle_direct_message(event, say)
     
     async def _handle_slash_command(self, command, respond):
-        """Handle /poe slash commands with conversation context"""
+        """Handle /poe slash commands with conversation context.
+
+        Slash commands don't carry a Slack thread for the bot to reply into,
+        so for chat-style invocations in a channel we post a public placeholder
+        message ourselves and use *its* ts as the thread root for the
+        resulting conversation. Subsequent ``@PyPoe`` mentions in that thread
+        will resolve to the same ``slack_thread_<chan>_<ts>`` conversation id.
+
+        Metadata commands (help, models, usage, reset, context, stats,
+        set-model) reply ephemerally so they don't pollute the channel.
+        """
         user_id = command["user_id"]
         channel_id = command["channel_id"]
         channel_type = command.get("channel_type", "unknown")
+        # Slack sometimes includes thread_ts when the slash command is invoked
+        # from inside a thread; reuse it when present.
+        slash_thread_ts = command.get("thread_ts")
         text = command.get("text", "").strip()
 
-        async def respond_in_channel(message):
-            """Publish slash-command output into Slack history."""
-            if isinstance(message, dict):
-                payload = {"response_type": "in_channel", **message}
-            else:
-                payload = {"response_type": "in_channel", "text": message}
-            await respond(payload)
-        
-        try:
-            command_text = f"/poe {text}".strip()
-            await respond_in_channel(f"📝 <@{user_id}> ran `{command_text}`")
+        is_dm = channel_type == "im"
 
-            # Get conversation context
-            context = await self._get_or_create_conversation_context(user_id, channel_id, channel_type)
-            
+        async def respond_ephemeral(message):
+            if isinstance(message, dict):
+                payload = {"response_type": "ephemeral", **message}
+            else:
+                payload = {"response_type": "ephemeral", "text": message}
+            await respond(payload)
+
+        async def get_existing_context() -> Optional[SlackConversationContext]:
+            """Resolve a context for metadata commands (no new thread root)."""
+            if is_dm:
+                return await self._get_or_create_conversation_context(
+                    user_id, channel_id, channel_type
+                )
+            if slash_thread_ts:
+                return await self._get_or_create_conversation_context(
+                    user_id, channel_id, channel_type, thread_ts=slash_thread_ts
+                )
+            return None
+
+        try:
             if not text or text == "help":
-                await respond_in_channel(self._get_help_message(context))
+                ctx = await get_existing_context()
+                await respond_ephemeral(self._get_help_message_for_slash(ctx, is_dm))
                 return
-            
+
             parts = text.split(" ", 1)
             cmd = parts[0].lower()
             args = parts[1] if len(parts) > 1 else ""
-            
+
             if cmd == "models":
-                await respond_in_channel(self._get_models_message())
-            
-            elif cmd == "set-model":
+                await respond_ephemeral(self._get_models_message())
+                return
+
+            if cmd == "usage":
+                await respond_ephemeral(self._get_usage_message(user_id))
+                return
+
+            if cmd == "set-model":
                 if not args:
-                    await respond_in_channel("❌ Please specify a model. Use `/poe models` to see available options.")
+                    await respond_ephemeral(
+                        "❌ Please specify a model. Use `/poe models` to see available options."
+                    )
                     return
-                await self._set_user_model(context, args, respond_in_channel)
-            
-            elif cmd == "chat":
+                ctx = await get_existing_context()
+                if ctx is None:
+                    await respond_ephemeral(
+                        "ℹ️ `/poe set-model` from a channel needs a thread to apply to. "
+                        "Run it inside a DM, or run it from inside an existing PyPoe thread."
+                    )
+                    return
+                await self._set_user_model(ctx, args, respond_ephemeral)
+                return
+
+            if cmd == "reset":
+                ctx = await get_existing_context()
+                if ctx is None:
+                    await respond_ephemeral(
+                        "ℹ️ `/poe reset` from a channel needs a thread to clear. "
+                        "Run it inside a DM, or run it from inside the PyPoe thread you "
+                        "want to reset. To start fresh in this channel, just run "
+                        "`/poe chat …` again — it opens a new thread."
+                    )
+                    return
+                await self._reset_conversation(ctx, respond_ephemeral)
+                return
+
+            if cmd == "context":
+                ctx = await get_existing_context()
+                if ctx is None:
+                    await respond_ephemeral(
+                        "ℹ️ `/poe context` shows info for a specific conversation. "
+                        "Run it inside a DM or inside an existing PyPoe thread."
+                    )
+                    return
+                await respond_ephemeral(self._get_context_info(ctx))
+                return
+
+            if cmd == "stats":
+                ctx = await get_existing_context()
+                if ctx is None:
+                    await respond_ephemeral(
+                        "ℹ️ `/poe stats` shows stats for a specific conversation. "
+                        "Run it inside a DM or inside an existing PyPoe thread."
+                    )
+                    return
+                await respond_ephemeral(await self._get_context_stats(ctx))
+                return
+
+            if cmd == "chat":
                 if not args:
-                    await respond_in_channel("❌ Please provide a message. Example: `/poe chat Hello!`")
+                    await respond_ephemeral(
+                        "❌ Please provide a message. Example: `/poe chat Hello!`"
+                    )
                     return
-                await self._handle_chat_message(context, args, respond_in_channel)
-            
-            elif cmd == "usage":
-                await respond_in_channel(self._get_usage_message(user_id))
-            
-            elif cmd == "reset":
-                await self._reset_conversation(context, respond_in_channel)
-            
-            elif cmd == "context":
-                await respond_in_channel(self._get_context_info(context))
-            
-            elif cmd == "stats":
-                await respond_in_channel(await self._get_context_stats(context))
-            
-            else:
-                await respond_in_channel(f"❌ Unknown command: `{cmd}`. Use `/poe help` for available commands.")
-        
+
+                if is_dm:
+                    # DMs: no thread; reply directly in the conversation.
+                    ctx = await self._get_or_create_conversation_context(
+                        user_id, channel_id, channel_type
+                    )
+                    await respond_ephemeral(f"📝 You ran `/poe chat {args}`")
+                    await self._handle_chat_message(
+                        ctx, args, channel_id=channel_id, thread_ts=None
+                    )
+                    return
+
+                # Channels/groups/mpims: post a public placeholder so its ts can
+                # serve as the thread root for this entire conversation.
+                if slash_thread_ts:
+                    # Already inside a thread (Slack provided thread_ts).
+                    placeholder = await self.app.client.chat_postMessage(
+                        channel=channel_id,
+                        text=(
+                            f"🤖 <@{user_id}> asked via `/poe chat`:\n"
+                            f"> {args}\n\n_Thinking…_"
+                        ),
+                        thread_ts=slash_thread_ts,
+                    )
+                    thread_ts = slash_thread_ts
+                else:
+                    placeholder = await self.app.client.chat_postMessage(
+                        channel=channel_id,
+                        text=(
+                            f"🤖 <@{user_id}> asked via `/poe chat`:\n"
+                            f"> {args}\n\n_Thinking…_"
+                        ),
+                    )
+                    # The placeholder itself is the thread root.
+                    thread_ts = placeholder["ts"]
+                pending_ts = placeholder["ts"]
+
+                ctx = await self._get_or_create_conversation_context(
+                    user_id, channel_id, channel_type, thread_ts=thread_ts
+                )
+                await self._handle_chat_message(
+                    ctx,
+                    args,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    pending_message_ts=pending_ts,
+                )
+                return
+
+            await respond_ephemeral(
+                f"❌ Unknown command: `{cmd}`. Use `/poe help` for available commands."
+            )
+
         except Exception as e:
             logger.error(f"Error handling command: {e}")
-            await respond_in_channel(f"❌ Error: {str(e)}")
-    
+            try:
+                await respond_ephemeral(f"❌ Error: {str(e)}")
+            except Exception:
+                logger.exception("Failed to surface slash-command error to user")
+
     async def _handle_mention(self, event, say):
-        """Handle @poe_bot mentions in channels"""
+        """Handle @PyPoe mentions in channels.
+
+        The reply is always placed in the corresponding Slack thread:
+          * Mention inside a thread → thread_ts is ``event["thread_ts"]``.
+          * Mention at the top level → thread_ts is ``event["ts"]`` (a new
+            thread is started rooted at the user's mention).
+        """
         user_id = event["user"]
         channel_id = event["channel"]
         channel_type = event.get("channel_type", "public_channel")
         text = event.get("text", "")
-        
-        # Remove the bot mention from the text
-        text = " ".join([word for word in text.split() if not word.startswith("<@")])
-        
+        thread_ts = event.get("thread_ts") or event.get("ts")
+
+        # Strip the bot's own mention(s) from the text.
+        text = " ".join(
+            [word for word in text.split() if not word.startswith("<@")]
+        )
+
         if not text.strip():
-            context = await self._get_or_create_conversation_context(user_id, channel_id, channel_type)
-            await say(self._get_help_message(context))
+            context = await self._get_or_create_conversation_context(
+                user_id, channel_id, channel_type, thread_ts=thread_ts
+            )
+            await self._post_in_thread(
+                channel_id, self._get_help_message(context), thread_ts
+            )
             return
-        
-        context = await self._get_or_create_conversation_context(user_id, channel_id, channel_type)
-        await self._handle_chat_message(context, text, say)
-    
+
+        context = await self._get_or_create_conversation_context(
+            user_id, channel_id, channel_type, thread_ts=thread_ts
+        )
+        await self._handle_chat_message(
+            context, text, channel_id=channel_id, thread_ts=thread_ts
+        )
+
     async def _handle_direct_message(self, event, say):
-        """Handle direct messages to the bot"""
-        user_id = event["user"]
-        channel_id = event["channel"]
-        text = event.get("text", "")
-        
-        if not text.strip():
-            context = await self._get_or_create_conversation_context(user_id, channel_id, "im")
-            await say(self._get_help_message(context))
+        """Handle direct messages to the bot.
+
+        DMs without a thread go to one persistent per-user conversation
+        (``slack_dm_<user_id>``). If the user replies inside an existing
+        thread in the DM, that thread becomes its own per-thread
+        conversation and the bot's reply is threaded so it stays in place.
+        """
+        # Ignore the bot's own messages and message edits/deletes.
+        if event.get("bot_id") or event.get("subtype"):
             return
-        
-        context = await self._get_or_create_conversation_context(user_id, channel_id, "im")
-        await self._handle_chat_message(context, text, say)
-    
-    async def _handle_chat_message(self, context: SlackConversationContext, text: str, respond_func):
-        """Handle a chat message with persistent conversation history"""
+
+        user_id = event.get("user")
+        channel_id = event.get("channel")
+        if not user_id or not channel_id:
+            # Some message events (e.g. bot/system) don't carry a user id;
+            # the previous implementation crashed on event["user"] here.
+            return
+
+        text = event.get("text", "")
+        # event.thread_ts is set when the message is a reply inside a
+        # thread; top-level DM messages have no thread_ts and stay in the
+        # persistent per-user conversation.
+        thread_ts = event.get("thread_ts")
+
+        if not text.strip():
+            context = await self._get_or_create_conversation_context(
+                user_id, channel_id, "im", thread_ts=thread_ts
+            )
+            await self._post_in_thread(
+                channel_id, self._get_help_message(context), thread_ts
+            )
+            return
+
+        context = await self._get_or_create_conversation_context(
+            user_id, channel_id, "im", thread_ts=thread_ts
+        )
+        await self._handle_chat_message(
+            context, text, channel_id=channel_id, thread_ts=thread_ts
+        )
+
+    async def _post_in_thread(
+        self,
+        channel_id: str,
+        text: str,
+        thread_ts: Optional[str],
+    ) -> Dict[str, Any]:
+        """Post a message via Web API, threading it when ``thread_ts`` is set."""
+        kwargs: Dict[str, Any] = {"channel": channel_id, "text": text}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        return await self.app.client.chat_postMessage(**kwargs)
+
+    async def _handle_chat_message(
+        self,
+        context: SlackConversationContext,
+        text: str,
+        *,
+        channel_id: str,
+        thread_ts: Optional[str] = None,
+        pending_message_ts: Optional[str] = None,
+    ):
+        """Handle a chat message with persistent conversation history.
+
+        Always posts (or reuses) a placeholder message and then replaces it
+        in-place with the model's response, so the Slack thread stays clean
+        instead of accumulating "Thinking…" messages.
+        """
         try:
-            # Update last activity
             context.last_activity = datetime.now()
-            
-            # Send "thinking" indicator
-            await respond_func("🤖 Thinking...")
-            
-            # Get response from PyPoe with conversation history
+
+            # Reuse a caller-supplied placeholder (slash command path) or post
+            # one ourselves so the user sees immediate feedback.
+            if pending_message_ts is None:
+                placeholder = await self._post_in_thread(
+                    channel_id, "🤖 Thinking…", thread_ts
+                )
+                pending_message_ts = placeholder["ts"]
+
+            # Build the prompt context from persisted history.
             if self.history:
-                # Load existing conversation history
                 try:
-                    existing_messages = await self.history.get_conversation_messages(context.conversation_id)
-                    
-                    # Convert to API format
-                    conversation_messages = []
-                    for msg in existing_messages:
-                        conversation_messages.append({
-                            'role': msg['role'],
-                            'content': msg['content']
-                        })
-                    
-                    # Add new user message
-                    conversation_messages.append({
-                        'role': 'user',
-                        'content': text
-                    })
-                    
-                    # Apply intelligent context truncation
-                    conversation_messages = self._truncate_conversation_context(
-                        conversation_messages, 
-                        context.preferred_model
+                    existing_messages = await self.history.get_conversation_messages(
+                        context.conversation_id
                     )
-                    
-                    # Save user message to database (always save, even if truncated from context)
+
+                    conversation_messages = [
+                        {"role": msg["role"], "content": msg["content"]}
+                        for msg in existing_messages
+                    ]
+                    conversation_messages.append({"role": "user", "content": text})
+
+                    conversation_messages = self._truncate_conversation_context(
+                        conversation_messages,
+                        context.preferred_model,
+                    )
+
+                    # Persist the user message even if it gets truncated out of
+                    # the prompt window; full history is what makes /poe stats
+                    # and reset behave correctly.
                     await self.history.add_message(
                         conversation_id=context.conversation_id,
                         role="user",
-                        content=text
+                        content=text,
                     )
-                    
+
                 except Exception as e:
                     logger.error(f"Failed to load conversation history: {e}")
-                    # Fallback to single message
-                    conversation_messages = [{'role': 'user', 'content': text}]
+                    conversation_messages = [{"role": "user", "content": text}]
             else:
-                conversation_messages = [{'role': 'user', 'content': text}]
-            
-            # Get bot response
+                conversation_messages = [{"role": "user", "content": text}]
+
             full_response = ""
             async for chunk in self.poe_client.send_conversation(
                 messages=conversation_messages,
                 bot_name=context.preferred_model,
-                save_history=False  # We handle our own history
+                save_history=False,  # We persist via HistoryManager directly.
             ):
                 full_response += chunk
-            
-            # Save bot response to database
+
             if self.history and full_response:
                 await self.history.add_message(
                     conversation_id=context.conversation_id,
                     role="assistant",
                     content=full_response,
-                    bot_name=context.preferred_model
+                    bot_name=context.preferred_model,
                 )
-            
-            # Track usage
-            self.usage_tracker.track_usage(context.user_id, context.preferred_model, text, full_response)
-            
-            # Format response for Slack
-            response_text = self._format_response_for_slack(
-                full_response, 
-                context.preferred_model, 
-                context.chat_mode
+
+            self.usage_tracker.track_usage(
+                context.user_id, context.preferred_model, text, full_response
             )
-            
-            await respond_func(response_text)
-            
+
+            response_text = self._format_response_for_slack(
+                full_response,
+                context.preferred_model,
+                context.chat_mode,
+            )
+
+            await self.app.client.chat_update(
+                channel=channel_id,
+                ts=pending_message_ts,
+                text=response_text,
+            )
+
         except Exception as e:
             logger.error(f"Error handling chat message: {e}")
-            await respond_func(f"❌ Sorry, I encountered an error: {str(e)}")
+            try:
+                await self._post_in_thread(
+                    channel_id,
+                    f"❌ Sorry, I encountered an error: {str(e)}",
+                    thread_ts,
+                )
+            except Exception:
+                logger.exception("Failed to surface chat error to Slack")
     
     async def _set_user_model(self, context: SlackConversationContext, model: str, respond_func):
         """Set the preferred model for a conversation context"""
@@ -509,37 +771,46 @@ class PyPoeSlackBot:
         )
     
     async def _reset_conversation(self, context: SlackConversationContext, respond_func):
-        """Reset the conversation history for a context"""
+        """Reset the conversation history for a context."""
         try:
             if self.history:
-                # Delete conversation from database and recreate
                 await self.history.delete_conversation(context.conversation_id)
-                
-                # Recreate conversation
+
+                # Re-derive id from the same scoping inputs and re-seed the
+                # parent row so future messages aren't orphaned.
                 conversation_id, chat_mode, title = self._determine_conversation_strategy(
-                    context.channel_type, context.user_id, context.channel_id
+                    context.channel_type,
+                    context.user_id,
+                    context.channel_id,
+                    thread_ts=context.thread_ts,
                 )
                 await self.history.create_conversation(
                     title=title,
                     bot_name=context.preferred_model,
-                    chat_mode=chat_mode
+                    chat_mode=chat_mode,
+                    conversation_id=conversation_id,
                 )
-            
+
             await respond_func(f"✅ Conversation reset\n📍 Context: {context.chat_mode}")
-            
+
         except Exception as e:
             logger.error(f"Error resetting conversation: {e}")
             await respond_func(f"❌ Error resetting conversation: {str(e)}")
-    
+
     def _get_context_info(self, context: SlackConversationContext) -> str:
-        """Get information about the current conversation context"""
+        """Get information about the current conversation context."""
+        thread_line = (
+            f"**Thread Root TS:** `{context.thread_ts}`\n"
+            if context.thread_ts
+            else ""
+        )
         return f"""
 📍 **Conversation Context**
 
 **Type:** {context.chat_mode}
 **User:** {context.user_id}
 **Channel:** {context.channel_id}
-**Conversation ID:** `{context.conversation_id}`
+{thread_line}**Conversation ID:** `{context.conversation_id}`
 **Model:** {context.preferred_model}
 **Last Activity:** {context.last_activity.strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -547,10 +818,9 @@ class PyPoeSlackBot:
 • Max Messages: {context.max_context_messages}
 • Max Tokens: {context.max_context_tokens:,}
 
-**Context Explanation:**
-• `slack_dm`: Direct message with individual context
-• `slack_channel_individual`: Channel message with per-user context
-• `slack_channel_shared`: Channel message with shared context (all users)
+**Scoping:**
+• `slack_dm` → one persistent conversation per user.
+• `slack_thread` → one conversation per Slack thread (channel/group/mpim).
 """
     
     async def _get_context_stats(self, context: SlackConversationContext) -> str:
@@ -630,38 +900,75 @@ class PyPoeSlackBot:
             return f"❌ Error retrieving context statistics: {str(e)}"
     
     def _get_help_message(self, context: SlackConversationContext) -> str:
-        """Get help message with context information"""
+        """Get help message scoped to a specific conversation context."""
         return f"""
 🤖 **PyPoe Slack Bot - Help**
 
 **Current Context:** {context.chat_mode}
+**Your Model:** {context.preferred_model}
 
 **Slash Commands:**
 • `/poe help` - Show this help
 • `/poe models` - List available AI models
-• `/poe chat <message>` - Send a message to the bot
-• `/poe set-model <model>` - Set your preferred model
+• `/poe chat <message>` - Send a message (opens a thread in channels)
+• `/poe set-model <model>` - Set the model for this conversation
 • `/poe usage` - Check your token usage stats
-• `/poe reset` - Reset conversation history
+• `/poe reset` - Reset this conversation's history
 • `/poe context` - Show conversation context info
 • `/poe stats` - Show detailed context statistics
 
 **Direct Interaction:**
-• `@poe_bot <message>` - Mention the bot in any channel
-• Send direct messages to the bot
+• `@PyPoe <message>` - Mention the bot to start a thread, or reply in
+  an existing thread to continue that conversation.
+• DM the bot directly for a private, persistent conversation.
 
-**Features:**
-• 🧠 Access to the configured chat-only Poe models
-• 💬 Multi-turn conversations with persistent context
-• 📊 Usage tracking and compute point monitoring
-• 🔄 Model switching mid-conversation
-• 💾 Database-backed conversation history
-• 👥 Smart context isolation (per-user or shared)
-• ⚡ Intelligent context management (auto-truncation)
-• 📈 Real-time context statistics and monitoring
+**How conversations are scoped:**
+• 💬 DMs → one persistent conversation per user.
+• 🧵 Channels / groups → one conversation per Slack thread. Replies in
+  the thread (with `@PyPoe`) continue the same context. Start a new
+  thread to start a new conversation.
 
 **Current Status:** ✅ Connected to Poe API
-**Your Model:** {context.preferred_model}
+"""
+
+    def _get_help_message_for_slash(
+        self,
+        context: Optional[SlackConversationContext],
+        is_dm: bool,
+    ) -> str:
+        """Help variant for slash commands invoked outside any thread."""
+        if context is not None:
+            return self._get_help_message(context)
+
+        scope_hint = (
+            "You ran `/poe help` from a channel without an active thread, "
+            "so per-thread commands (`reset`, `context`, `stats`, `set-model`) "
+            "have nothing to act on yet. Use `/poe chat …` to open a thread, "
+            "or run those commands from a DM."
+        )
+        return f"""
+🤖 **PyPoe Slack Bot - Help**
+
+{scope_hint}
+
+**Slash Commands:**
+• `/poe help` - Show this help
+• `/poe models` - List available AI models
+• `/poe chat <message>` - Send a message (opens a thread in channels)
+• `/poe set-model <model>` - Set the model for this conversation
+• `/poe usage` - Check your token usage stats
+• `/poe reset` - Reset this conversation's history
+• `/poe context` - Show conversation context info
+• `/poe stats` - Show detailed context statistics
+
+**Direct Interaction:**
+• `@PyPoe <message>` - Mention the bot to start a thread, or reply in
+  an existing thread to continue that conversation.
+• DM the bot directly for a private, persistent conversation.
+
+**How conversations are scoped:**
+• 💬 DMs → one persistent conversation per user.
+• 🧵 Channels / groups → one conversation per Slack thread.
 """
     
     def _get_models_message(self) -> str:
@@ -759,13 +1066,11 @@ class PyPoeSlackBot:
         if len(response) > 3000:
             response = response[:2950] + "\n\n... *(response truncated)*"
         
-        # Add context indicator for clarity
         context_indicator = {
             "slack_dm": "🔒 DM",
-            "slack_channel_individual": "👤 Individual",
-            "slack_channel_shared": "👥 Shared",
+            "slack_thread": "🧵 Thread",
         }.get(chat_mode, "❓ Unknown")
-        
+
         return f"🤖 **{model}** {context_indicator}\n\n{response}"
     
     def _estimate_message_tokens(self, message: Dict[str, str]) -> int:
