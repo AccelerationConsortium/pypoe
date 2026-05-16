@@ -1,10 +1,14 @@
 import asyncio
 import json
 import secrets
+import socket
+import subprocess
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, Request, Form, HTTPException, WebSocket, WebSocketDisconnect, Depends
-from fastapi.responses import HTMLResponse, JSONResponse
+from typing import List, Dict, Any, Optional, Tuple, Union
+from fastapi import FastAPI, Request, Form, HTTPException, WebSocket, WebSocketDisconnect, Depends, Header
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -50,6 +54,11 @@ class MessageSend(BaseModel):
     bot_name: Optional[str] = None
     chat_mode: Optional[str] = None
 
+class ClaimRequest(BaseModel):
+    owner: str
+    session_id: str
+    ttl_s: float = 30.0
+
 class WebApp:
     """FastAPI web application for PyPoe chat interface."""
     
@@ -89,6 +98,9 @@ class WebApp:
         
         # Active WebSocket connections for real-time chat
         self.active_connections: List[WebSocket] = []
+        self._status_cache: Optional[Dict[str, Any]] = None
+        self._status_cache_expires_at = 0.0
+        self._claim: Optional[Dict[str, Any]] = None
         
         self._setup_routes()
         
@@ -248,6 +260,207 @@ class WebApp:
                 headers={"WWW-Authenticate": "Basic"},
             )
     
+
+    def _now_utc(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _probe_payload(self) -> Dict[str, Any]:
+        return {
+            "equipment_id": "pypoe_web",
+            "equipment_name": "PyPoe Web UI",
+            "protocol_version": "1.1",
+        }
+
+    def _component(self, connected: bool, state: str, message: Optional[str] = None) -> Dict[str, Any]:
+        return {
+            "connected": connected,
+            "state": state,
+            "message": message,
+            "last_event_at": None,
+        }
+
+    def _metric(self, value: Union[float, int, str, bool], unit: Optional[str] = None) -> Dict[str, Any]:
+        return {
+            "value": value,
+            "unit": unit,
+            "timestamp": self._now_utc().isoformat(),
+        }
+
+    def _tcp_check(self, host: str, port: int, timeout_s: float = 1.0) -> Tuple[bool, Optional[float], Optional[str]]:
+        start = time.perf_counter()
+        try:
+            with socket.create_connection((host, port), timeout=timeout_s):
+                elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+                return True, elapsed_ms, None
+        except OSError as exc:
+            return False, None, str(exc)
+
+    def _ip_brief(self) -> str:
+        try:
+            result = subprocess.run(
+                ["ip", "-brief", "addr"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            return result.stdout if result.returncode == 0 else ""
+        except (FileNotFoundError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+            return ""
+
+    def _network_components(self) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        components: Dict[str, Any] = {}
+        metrics: Dict[str, Any] = {}
+        details: Dict[str, Any] = {}
+
+        internet_ok, internet_ms, internet_error = self._tcp_check("1.1.1.1", 443)
+        components["internet"] = self._component(
+            internet_ok,
+            "reachable" if internet_ok else "unreachable",
+            internet_error,
+        )
+        if internet_ms is not None:
+            metrics["internet_latency"] = self._metric(internet_ms, "ms")
+
+        ip_brief = self._ip_brief()
+        details["ip_brief"] = ip_brief.strip()
+        tailscale_ok = "tailscale0" in ip_brief and "100.64." in ip_brief
+        components["tailscale"] = self._component(
+            tailscale_ok,
+            "up" if tailscale_ok else "down",
+            None if tailscale_ok else "tailscale0 with 100.64.x address not detected",
+        )
+
+        wifi_lines = [line for line in ip_brief.splitlines() if line.startswith(("wl", "wlan"))]
+        wifi_ok = any("UP" in line and "172.31." in line for line in wifi_lines)
+        components["wifi"] = self._component(
+            wifi_ok,
+            "associated" if wifi_ok else "not_associated",
+            None if wifi_ok else "no UP WiFi interface with lab address detected",
+        )
+        details["wifi_interfaces"] = wifi_lines
+
+        return components, metrics, details
+
+    def _active_claim(self) -> Optional[Dict[str, Any]]:
+        if self._claim is None:
+            return None
+        if self._claim["expires_at"] <= self._now_utc():
+            self._claim = None
+            return None
+        return self._claim
+
+    def _claimed_by(self) -> Optional[Dict[str, Any]]:
+        claim = self._active_claim()
+        if claim is None:
+            return None
+        return {
+            "session_id": claim["session_id"],
+            "owner": claim["owner"],
+            "expires_at": claim["expires_at"].isoformat(),
+        }
+
+    async def _status_payload(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        if self._status_cache is not None and now < self._status_cache_expires_at:
+            cached = dict(self._status_cache)
+            cached["device_time"] = self._now_utc().isoformat()
+            cached.setdefault("details", {})["claimed_by"] = self._claimed_by()
+            return cached
+
+        device_time = self._now_utc()
+        components: Dict[str, Any] = {"web_ui": self._component(True, "serving")}
+        metrics: Dict[str, Any] = {}
+        details: Dict[str, Any] = {}
+        last_error = None
+
+        api_key_configured = bool(self.config.poe_api_key)
+        poe_ok = False
+        poe_state = "not_configured"
+        poe_message = None
+        if api_key_configured:
+            try:
+                start = time.perf_counter()
+                await self.client.get_available_bots()
+                poe_ms = round((time.perf_counter() - start) * 1000, 2)
+                poe_ok = True
+                poe_state = "connected"
+                metrics["poe_response_time"] = self._metric(poe_ms, "ms")
+            except Exception as exc:
+                poe_state = "error"
+                poe_message = str(exc)
+                last_error = {
+                    "code": "poe_api_error",
+                    "message": str(exc),
+                    "severity": "warning",
+                    "timestamp": device_time.isoformat(),
+                }
+        else:
+            poe_message = "POE_API_KEY is not configured"
+        components["poe_api"] = self._component(poe_ok, poe_state, poe_message)
+
+        storage_ok = True
+        storage_message = None
+        try:
+            import os
+            if os.path.exists(self.config.database_path):
+                db_size = os.path.getsize(self.config.database_path)
+                metrics["database_size"] = self._metric(round(db_size / 1024 / 1024, 2), "MB")
+            conversations = await self.client.get_conversations()
+            metrics["total_conversations"] = self._metric(len(conversations), "count")
+        except Exception as exc:
+            storage_ok = False
+            storage_message = str(exc)
+            if last_error is None:
+                last_error = {
+                    "code": "storage_error",
+                    "message": str(exc),
+                    "severity": "warning",
+                    "timestamp": device_time.isoformat(),
+                }
+        components["storage"] = self._component(storage_ok, "ok" if storage_ok else "error", storage_message)
+
+        network_components, network_metrics, network_details = await asyncio.to_thread(self._network_components)
+        components.update(network_components)
+        metrics.update(network_metrics)
+        details.update(network_details)
+        details["claimed_by"] = self._claimed_by()
+
+        required_components = ["web_ui", "poe_api", "storage", "internet", "tailscale"]
+        required_ok = all(components[key]["connected"] for key in required_components)
+        if required_ok:
+            equipment_status = "ready"
+            message = None
+        elif components["web_ui"]["connected"] and components["storage"]["connected"]:
+            equipment_status = "degraded"
+            failed = [key for key in required_components if not components[key]["connected"]]
+            message = f"Degraded components: {', '.join(failed)}"
+        else:
+            equipment_status = "error"
+            message = "PyPoe web service has critical component failures"
+
+        payload = {
+            "protocol_version": "1.1",
+            "equipment_id": "pypoe_web",
+            "equipment_name": "PyPoe Web UI",
+            "equipment_kind": "other",
+            "equipment_version": "2.7.0",
+            "host": socket.gethostname(),
+            "equipment_status": equipment_status,
+            "message": message,
+            "required_actions": [],
+            "allowed_actions": [],
+            "device_time": device_time.isoformat(),
+            "uptime_seconds": None,
+            "components": components,
+            "metrics": metrics,
+            "last_error": last_error,
+            "details": details,
+        }
+        self._status_cache = dict(payload)
+        self._status_cache_expires_at = now + 30.0
+        return payload
+
     def _setup_routes(self):
         """Setup all the routes for the web application."""
         
@@ -255,7 +468,10 @@ class WebApp:
 
         @self.app.get("/", response_class=HTMLResponse, dependencies=dependencies)
         async def index(request: Request):
-            """Main chat interface."""
+            """Main chat interface, or STATUS_SPEC probe for JSON clients."""
+            accept = request.headers.get("accept", "")
+            if "text/html" not in accept:
+                return JSONResponse(self._probe_payload())
             try:
                 conversations = await self.client.get_conversations()
                 available_bots = await self.client.get_available_bots()
@@ -269,7 +485,64 @@ class WebApp:
                 )
             except Exception as e:
                 return HTMLResponse(f"Error loading interface: {str(e)}", status_code=500)
-        
+
+        @self.app.get("/health")
+        async def lab_health():
+            """STATUS_SPEC health endpoint."""
+            return JSONResponse({"status": "healthy"})
+
+        @self.app.get("/status")
+        async def lab_status():
+            """STATUS_SPEC v1.1 status endpoint for dashboard monitoring."""
+            return JSONResponse(await self._status_payload())
+
+        @self.app.post("/control/claim")
+        async def claim(request: ClaimRequest):
+            """Acquire a cooperative v1.1 claim."""
+            active = self._active_claim()
+            if active is not None and active["session_id"] != request.session_id:
+                retry_after = max(0.0, (active["expires_at"] - self._now_utc()).total_seconds())
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "detail": "pypoe_web is already claimed",
+                        "claimed_by": self._claimed_by(),
+                        "retry_after_s": retry_after,
+                    },
+                    headers={"Retry-After": str(round(retry_after, 1))},
+                )
+            ttl_s = min(max(request.ttl_s, 5.0), 120.0)
+            claim_token = active["claim_token"] if active else secrets.token_urlsafe(24)
+            expires_at = self._now_utc() + timedelta(seconds=ttl_s)
+            self._claim = {
+                "claim_token": claim_token,
+                "session_id": request.session_id,
+                "owner": request.owner,
+                "expires_at": expires_at,
+            }
+            return JSONResponse({
+                "claim_token": claim_token,
+                "heartbeat_interval_s": min(10.0, ttl_s / 2),
+                "expires_at": expires_at.isoformat(),
+            })
+
+        @self.app.post("/control/heartbeat")
+        async def heartbeat(x_claim_token: Optional[str] = Header(None, alias="X-Claim-Token")):
+            """Refresh an active v1.1 claim."""
+            active = self._active_claim()
+            if active is None or x_claim_token != active["claim_token"]:
+                raise HTTPException(status_code=401, detail="unknown or expired claim token")
+            active["expires_at"] = self._now_utc() + timedelta(seconds=30.0)
+            return Response(status_code=204)
+
+        @self.app.post("/control/release")
+        async def release(x_claim_token: Optional[str] = Header(None, alias="X-Claim-Token")):
+            """Release an active v1.1 claim. Idempotent by spec."""
+            active = self._active_claim()
+            if active is not None and x_claim_token == active["claim_token"]:
+                self._claim = None
+            return Response(status_code=204)
+
         @self.app.get("/history", response_class=HTMLResponse, dependencies=dependencies)
         async def conversation_history(request: Request):
             """Conversation history browser."""
