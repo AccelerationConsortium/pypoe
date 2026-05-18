@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pypoe"
-version = "2.7.0"
+version = "3.0.0"
 description = "Python client for Poe.com using the official API"
 readme = "README.md"
 license = {text = "MIT"}
@@ -53,11 +53,22 @@ media = [
     "aiohttp>=3.9.0",
 ]
 
+# AC Organic Self-driving Lab integration: read-only MCP server,
+# Slack /lab-* commands, Uptime Kuma alert routes. Talks to the
+# ac-organic-lab aggregator (port 8001) over HTTP only — no /control/*.
+# pip install pypoe[lab]
+lab = [
+    "mcp>=1.2.0",
+    "httpx>=0.27",
+    "slack-sdk>=3.27",  # explicit; slack-bolt would otherwise be required
+]
+
 # Development
 # pip install pypoe[dev]
 dev = [
     "pypoe[web-ui]",
     "pypoe[media]",
+    "pypoe[lab]",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "black>=23.0.0",
