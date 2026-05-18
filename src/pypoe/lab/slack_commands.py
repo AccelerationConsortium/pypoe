@@ -23,14 +23,53 @@ HEALTHY_STATES: frozenset[str] = frozenset(
 )
 
 
-def register_lab_commands(app: Any, client: LabClient) -> None:
-    """Register ``/lab-*`` handlers on an ``AsyncApp``.
+DEFAULT_COMMAND_PREFIX = "/lab-"
+
+
+def register_lab_commands(
+    app: Any,
+    client: LabClient,
+    *,
+    command_prefix: str | None = None,
+) -> list[str]:
+    """Register the five lab slash commands on an ``AsyncApp``.
+
+    ``command_prefix`` controls the namespace, e.g.
+
+    * ``"/lab-"`` (default) → ``/lab-status``, ``/lab-device``, …
+    * ``"/sdl2-lab-"``      → ``/sdl2-lab-status``, ``/sdl2-lab-device``, …
+
+    If ``command_prefix`` is None, falls back to the
+    ``LAB_SLACK_COMMAND_PREFIX`` env var, then to ``DEFAULT_COMMAND_PREFIX``.
+    Useful when an org runs multiple labs in one Slack workspace and
+    each needs its own namespace.
+
+    Returns the list of registered command names (including the leading
+    slash) — useful for logging and for the test suite.
 
     Typed as ``Any`` so importing this module never requires
     ``slack_bolt`` to be installed (the registration call sites do).
     """
+    import os
 
-    @app.command("/lab-status")
+    prefix = (
+        command_prefix
+        if command_prefix is not None
+        else os.environ.get("LAB_SLACK_COMMAND_PREFIX", DEFAULT_COMMAND_PREFIX)
+    )
+    if not prefix.startswith("/"):
+        raise ValueError(
+            f"command_prefix must start with '/'; got {prefix!r}. "
+            "Example: '/lab-' or '/sdl2-lab-'"
+        )
+
+    cmd_status   = f"{prefix}status"
+    cmd_device   = f"{prefix}device"
+    cmd_runs     = f"{prefix}runs"
+    cmd_sensors  = f"{prefix}sensors"
+    cmd_actions  = f"{prefix}actions"
+
+    @app.command(cmd_status)
     async def _lab_status(ack: Callable, respond: Callable, command: dict) -> None:
         await ack()
         try:
@@ -41,12 +80,12 @@ def register_lab_commands(app: Any, client: LabClient) -> None:
             return
         await respond(_format_status(health, eq))
 
-    @app.command("/lab-device")
+    @app.command(cmd_device)
     async def _lab_device(ack: Callable, respond: Callable, command: dict) -> None:
         await ack()
         device_id = (command.get("text") or "").strip().split()[0:1]
         if not device_id:
-            await respond(_err("Usage: `/lab-device <equipment_id>`"))
+            await respond(_err(f"Usage: `{cmd_device} <equipment_id>`"))
             return
         try:
             snap = await client.get_equipment_status(device_id[0])
@@ -55,7 +94,7 @@ def register_lab_commands(app: Any, client: LabClient) -> None:
             return
         await respond(_format_device(snap))
 
-    @app.command("/lab-runs")
+    @app.command(cmd_runs)
     async def _lab_runs(ack: Callable, respond: Callable, command: dict) -> None:
         await ack()
         text = (command.get("text") or "").strip()
@@ -70,7 +109,7 @@ def register_lab_commands(app: Any, client: LabClient) -> None:
             return
         await respond(_format_runs(data, limit))
 
-    @app.command("/lab-sensors")
+    @app.command(cmd_sensors)
     async def _lab_sensors(ack: Callable, respond: Callable, command: dict) -> None:
         await ack()
         try:
@@ -80,12 +119,12 @@ def register_lab_commands(app: Any, client: LabClient) -> None:
             return
         await respond(_format_sensors(data))
 
-    @app.command("/lab-actions")
+    @app.command(cmd_actions)
     async def _lab_actions(ack: Callable, respond: Callable, command: dict) -> None:
         await ack()
         device_id = (command.get("text") or "").strip().split()[0:1]
         if not device_id:
-            await respond(_err("Usage: `/lab-actions <equipment_id>`"))
+            await respond(_err(f"Usage: `{cmd_actions} <equipment_id>`"))
             return
         try:
             snap = await client.get_equipment_status(device_id[0])
@@ -93,6 +132,8 @@ def register_lab_commands(app: Any, client: LabClient) -> None:
             await respond(_err(f"Could not fetch `{device_id[0]}`: {exc}"))
             return
         await respond(_format_actions(device_id[0], snap))
+
+    return [cmd_status, cmd_device, cmd_runs, cmd_sensors, cmd_actions]
 
 
 # ---------------------------------------------------------------------------

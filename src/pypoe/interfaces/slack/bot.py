@@ -223,13 +223,14 @@ class PyPoeSlackBot:
 
         try:
             self._lab_client = LabClient()
-            register_lab_commands(self.app, self._lab_client)
+            registered = register_lab_commands(self.app, self._lab_client)
             logger.info(
-                "Registered /lab-* slash commands against %s",
+                "Registered lab slash commands %s against %s",
+                registered,
                 self._lab_client.base_url,
             )
         except Exception as exc:
-            logger.warning("Failed to register /lab-* commands: %s", exc)
+            logger.warning("Failed to register lab slash commands: %s", exc)
     
     async def initialize(self):
         """Initialize the bot and fetch available models."""

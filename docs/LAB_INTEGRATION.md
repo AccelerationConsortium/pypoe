@@ -65,6 +65,7 @@ pip install -e ".[dev]"          # everything, including [lab]
 | `LAB_MCP_AGENT_SOURCE` | mcp | `claude-agent` | Tag stamped into the `extra.source` of every journaled observation. |
 | `LAB_MCP_HTTP_TIMEOUT` | all | `10` (seconds) | HTTP read timeout for aggregator calls. |
 | `LAB_ALERT_MAX_CONCURRENT` | alerts | `2` | Cap on simultaneous `claude -p` investigations. |
+| `LAB_SLACK_COMMAND_PREFIX` | slack bot | `/lab-` | Namespace for the slash commands. Set to `/sdl2-lab-` (or similar) when one Slack workspace serves multiple labs and each needs its own commands. |
 | `PYPOE_ENABLE_LAB` | slack bot, web | unset | Set to any non-empty value to wire `/lab-*` and `/alerts/kuma` without overriding `LAB_API_URL`. |
 | `SLACK_BOT_TOKEN` | mcp, alerts | (existing PyPoe env) | Required for `ask_human` and Kuma → Slack posts. |
 | `POE_API_KEY` | `consult_poe` via PyPoe CLI | (existing PyPoe env) | Required if Claude calls the `consult_poe` MCP tool. |
@@ -124,13 +125,25 @@ collapse (see `ac-organic-lab/api/app/history.py::ingest_events`).
 `LAB_API_URL` (or `PYPOE_ENABLE_LAB`) is set. No restart needed beyond
 `pypoe slack` itself.
 
-| Command | Output |
-|---|---|
-| `/lab-status` | Aggregator health + every device whose state is not `ready/idle/running/dry_run`, with claim holder if any. |
-| `/lab-device <id>` | One device's state, message, allowed actions, last error, and claim. |
-| `/lab-runs [limit]` | Most recent dosing runs (default 10). |
-| `/lab-sensors` | Latest reading per sensor (capped at 20 lines). |
-| `/lab-actions <id>` | The device's `allowed_actions` per STATUS_SPEC v1.1 — useful for "what could `lab-skills` do right now?". |
+Commands below use the default prefix `/lab-`. With
+`LAB_SLACK_COMMAND_PREFIX=/sdl2-lab-`, read every `/lab-` as
+`/sdl2-lab-`.
+
+| Command | Argument | Output |
+|---|---|---|
+| `/lab-status` | — | Aggregator health + every device whose state is not `ready/idle/running/dry_run`, with claim holder if any. |
+| `/lab-device` | `<equipment_id>` | One device's state, message, allowed actions, last error, and claim. |
+| `/lab-runs` | `[limit]` (default 10) | Most recent dosing runs. |
+| `/lab-sensors` | — | Latest reading per sensor (capped at 20 lines). |
+| `/lab-actions` | `<equipment_id>` | The device's `allowed_actions` per STATUS_SPEC v1.1 — useful for "what could `lab-skills` do right now?". |
+
+> When registering these in the Slack app admin UI, the **Command** field
+> takes only the hyphenated name (e.g. `/lab-device` or `/sdl2-lab-device`).
+> Arguments are typed by the user when they invoke the command (e.g.
+> `/lab-device plateloc`). Put the argument hint into Slack's
+> **Usage Hint** field instead, where spaces are allowed. The
+> `equipment_id` is the `id:` key from `ac-organic-lab/equipment.yaml`
+> (e.g. `plateloc`, `dose_every_well`, `ot2`).
 
 These call the aggregator directly and never invoke an LLM, so they're
 instant and free.

@@ -95,10 +95,50 @@ def _setup() -> tuple[_FakeApp, _FakeClient]:
 @pytest.mark.asyncio
 async def test_registers_all_five_commands():
     app, client = _setup()
-    slack_commands.register_lab_commands(app, client)
+    registered = slack_commands.register_lab_commands(app, client)
     assert set(app.handlers.keys()) == {
         "/lab-status", "/lab-device", "/lab-runs", "/lab-sensors", "/lab-actions",
     }
+    assert set(registered) == set(app.handlers.keys())
+
+
+@pytest.mark.asyncio
+async def test_custom_prefix_namespaces_commands():
+    """Org with multiple labs can prefix each lab's commands separately."""
+    app, client = _setup()
+    registered = slack_commands.register_lab_commands(
+        app, client, command_prefix="/sdl2-lab-"
+    )
+    assert set(app.handlers.keys()) == {
+        "/sdl2-lab-status", "/sdl2-lab-device", "/sdl2-lab-runs",
+        "/sdl2-lab-sensors", "/sdl2-lab-actions",
+    }
+    assert set(registered) == set(app.handlers.keys())
+
+
+@pytest.mark.asyncio
+async def test_prefix_from_env(monkeypatch):
+    monkeypatch.setenv("LAB_SLACK_COMMAND_PREFIX", "/sdl3-lab-")
+    app, client = _setup()
+    registered = slack_commands.register_lab_commands(app, client)
+    assert all(c.startswith("/sdl3-lab-") for c in registered)
+
+
+@pytest.mark.asyncio
+async def test_prefix_must_start_with_slash():
+    app, client = _setup()
+    with pytest.raises(ValueError, match="start with '/'"):
+        slack_commands.register_lab_commands(app, client, command_prefix="lab-")
+
+
+@pytest.mark.asyncio
+async def test_custom_prefix_in_usage_hint():
+    """When /lab-device is missing its arg, the usage message echoes the prefix."""
+    app, client = _setup()
+    slack_commands.register_lab_commands(app, client, command_prefix="/sdl2-lab-")
+    _, resp = await _invoke(app.handlers["/sdl2-lab-device"])
+    assert "/sdl2-lab-device" in resp
+    assert "<equipment_id>" in resp
 
 
 @pytest.mark.asyncio
