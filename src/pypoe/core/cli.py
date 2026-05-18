@@ -17,21 +17,27 @@ def create_main_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
                  epilog="""
 Available Interfaces:
-  web     - Start web interface interactively (browser-based UI)
-  cli     - Interactive command-line chat interface  
-  slack   - Start Slack bot interactively
-  
+  web         - Start web interface interactively (browser-based UI)
+  cli         - Interactive command-line chat interface
+  slack       - Start Slack bot interactively
+  lab-mcp     - Read-only MCP server for the AC Organic Self-driving Lab
+  lab-status  - One-shot health summary for the lab aggregator
+
 Examples:
   # Interactive Usage (foreground)
   pypoe web                     # Start web interface at http://localhost:8000
   pypoe web --host 0.0.0.0      # Start web interface on all interfaces
   pypoe slack                   # Start Slack bot interactively
-  
-  # CLI Usage  
+
+  # CLI Usage
   pypoe cli chat                # Start new CLI chat
-  pypoe cli list                # List all conversations  
+  pypoe cli list                # List all conversations
   pypoe cli select              # Interactive conversation browser
   pypoe cli show --conv-id XXX  # Show conversation history
+
+  # Lab integration (requires `pip install -e '.[lab]'`)
+  pypoe lab-status              # Print aggregator health + non-ready devices
+  pypoe lab-mcp                 # Run the MCP server on stdio (for Claude Desktop)
 
 Background services:
   Use systemd to keep pypoe web and pypoe slack running after logout.
@@ -63,7 +69,28 @@ Quick Start:
     
     # Slack interface (interactive)
     slack_parser = subparsers.add_parser('slack', help='Start Slack bot interactively')
-    
+
+    # Lab integration (AC Organic Self-driving Lab dashboard)
+    lab_mcp_parser = subparsers.add_parser(
+        'lab-mcp',
+        help='Run the read-only lab MCP server on stdio (for Claude Desktop / Code)',
+    )
+    lab_mcp_parser.add_argument(
+        '--base-url',
+        default=None,
+        help='Override LAB_API_URL (default: http://localhost:8001).',
+    )
+
+    lab_status_parser = subparsers.add_parser(
+        'lab-status',
+        help='Print aggregator health + non-ready devices and exit',
+    )
+    lab_status_parser.add_argument(
+        '--base-url',
+        default=None,
+        help='Override LAB_API_URL (default: http://localhost:8001).',
+    )
+
     return parser
 
 def run_web_interface(host: str = '127.0.0.1', port: int = 8000):
@@ -106,6 +133,67 @@ async def run_slack_interface():
         print("💡 Install Slack dependencies: pip install -e '.[web-ui]'")
         sys.exit(1)
 
+def run_lab_mcp(base_url=None):
+    """Run the lab MCP server on stdio."""
+    try:
+        from ..lab.mcp_server import main as mcp_main
+    except ImportError as e:
+        print(f"❌ Lab MCP not available: {e}")
+        print("💡 Install lab dependencies: pip install -e '.[lab]'")
+        sys.exit(1)
+    if base_url:
+        import os
+        os.environ["LAB_API_URL"] = base_url
+    mcp_main()
+
+async def run_lab_status(base_url=None):
+    """Print aggregator health + a one-line summary of every device."""
+    try:
+        from ..lab.http_client import LabClient
+    except ImportError as e:
+        print(f"❌ Lab integration not available: {e}")
+        print("💡 Install lab dependencies: pip install -e '.[lab]'")
+        sys.exit(1)
+
+    async with LabClient(base_url=base_url) as client:
+        try:
+            health = await client.health()
+        except Exception as exc:
+            print(f"❌ Aggregator unreachable at {client.base_url}: {exc}")
+            sys.exit(2)
+
+        version = health.get("version", "?")
+        count = health.get("equipment_count", "?")
+        print(f"✓ Aggregator healthy — version {version}, {count} device(s) registered")
+
+        try:
+            data = await client.list_equipment()
+        except Exception as exc:
+            print(f"⚠ Could not list equipment: {exc}")
+            return
+
+        equipment = data.get("equipment", [])
+        healthy_states = {"ready", "idle", "running", "dry_run"}
+        unhealthy = []
+        for e in equipment:
+            state = ((e.get("status") or {}).get("equipment_status")
+                     or ("unreachable" if e.get("fetch_error") else "unknown"))
+            if state not in healthy_states:
+                unhealthy.append((e.get("id"), state, e))
+
+        if not unhealthy:
+            print("All devices in a healthy state.")
+            return
+
+        print(f"{len(unhealthy)} device(s) need attention:")
+        for eq_id, state, eq in unhealthy:
+            status = eq.get("status") or {}
+            msg = status.get("message") or ""
+            line = f"  - {eq_id}: {state}"
+            if msg:
+                line += f" — {msg}"
+            print(line)
+
 def main():
     """Main entry point."""
     parser = create_main_parser()
@@ -126,6 +214,11 @@ def main():
         elif args.interface == 'slack':
             # Slack interface is async, so run it in asyncio
             asyncio.run(run_slack_interface())
+        elif args.interface == 'lab-mcp':
+            # MCP server is sync (FastMCP runs its own event loop over stdio).
+            run_lab_mcp(getattr(args, 'base_url', None))
+        elif args.interface == 'lab-status':
+            asyncio.run(run_lab_status(getattr(args, 'base_url', None)))
         else:
             parser.print_help()
             
