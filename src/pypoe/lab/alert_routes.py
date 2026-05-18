@@ -117,10 +117,13 @@ def register_alert_routes(
 
         if not is_down:
             # Recovery — post the recovery line, no investigation.
-            await _post_slack(
-                channel,
-                f":white_check_mark: *{monitor_name}* recovered — {msg}".strip(),
-            )
+            try:
+                await _post_slack(
+                    channel,
+                    f":white_check_mark: *{monitor_name}* recovered — {msg}".strip(),
+                )
+            except Exception as exc:
+                logger.error("Failed to post Slack recovery alert: %s", exc)
             return {"action": "recovered", "monitor": monitor_name}
 
         # Down — post the "investigating" line and kick off a background task.
