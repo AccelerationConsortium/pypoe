@@ -38,3 +38,8 @@ single_webchat_history.db
 test_single_webchat_history.db
 *.log
 *.tmp
+
+# Claude Code (CLAUDE.md and .claude/settings.json are committed; only personal overrides are ignored)
+.claude/settings.local.json
+CLAUDE.local.md
+CLAUDE.md
