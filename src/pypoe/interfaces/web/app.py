@@ -21,6 +21,11 @@ from ...core.client import PoeChatClient
 from ...core.logging_db import logger
 from ...core.models import CHAT_MODELS, DEFAULT_CHAT_MODEL
 
+# Standard-library logger for diagnostics that don't fit the structured
+# PyPoeLogger above (e.g. optional lab-integration wiring).
+import logging
+_stdlib_logger = logging.getLogger(__name__)
+
 # TODO: Add support for remote access of the webpage with username and password protection
 # This would involve:
 # - Adding authentication middleware (e.g., HTTP Basic Auth, session-based auth, or JWT)
@@ -103,7 +108,12 @@ class WebApp:
         self._claim: Optional[Dict[str, Any]] = None
         
         self._setup_routes()
-        
+
+        # Optional: POST /alerts/kuma webhook for the AC Organic Self-driving
+        # Lab. Activated by LAB_API_URL or PYPOE_ENABLE_LAB. Imports are local
+        # so the web app still starts if the lab extra isn't installed.
+        self._maybe_register_lab_alert_routes()
+
         # Log system startup
         logger.log_system_event(
             event_type="startup",
@@ -460,6 +470,33 @@ class WebApp:
         self._status_cache = dict(payload)
         self._status_cache_expires_at = now + 30.0
         return payload
+
+    def _maybe_register_lab_alert_routes(self) -> None:
+        """Mount ``POST /alerts/kuma`` if the lab extra is installed AND
+        ``LAB_API_URL`` / ``PYPOE_ENABLE_LAB`` is set in the environment.
+
+        Imports stay local so PyPoe's web app still starts on hosts that
+        don't have the lab extra installed.
+        """
+        import os
+        if not (os.environ.get("LAB_API_URL") or os.environ.get("PYPOE_ENABLE_LAB")):
+            return
+        try:
+            from ...lab.alert_routes import register_alert_routes
+            from ...lab.http_client import LabClient
+        except ImportError as exc:
+            _stdlib_logger.warning("Lab alert routes not loaded: %s", exc)
+            return
+
+        try:
+            self._lab_client = LabClient()
+            register_alert_routes(self.app, client=self._lab_client)
+            _stdlib_logger.info(
+                "Mounted POST /alerts/kuma against %s",
+                self._lab_client.base_url,
+            )
+        except Exception as exc:
+            _stdlib_logger.warning("Failed to register /alerts/kuma: %s", exc)
 
     def _setup_routes(self):
         """Setup all the routes for the web application."""

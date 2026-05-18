@@ -198,6 +198,38 @@ class PyPoeSlackBot:
         
         # Set up Slack event handlers
         self._setup_handlers()
+
+        # Optional: /lab-* slash commands. Activated by LAB_API_URL or
+        # PYPOE_ENABLE_LAB. Imports are kept local so the slack bot still
+        # starts if the lab extra isn't installed.
+        self._maybe_register_lab_commands()
+
+    def _maybe_register_lab_commands(self) -> None:
+        """Register read-only ``/lab-*`` slash commands if the lab extra is
+        installed AND ``LAB_API_URL`` / ``PYPOE_ENABLE_LAB`` is set.
+
+        See ``PyPoe/docs/LAB_INTEGRATION.md`` for the full list. The handlers
+        talk to the ``ac-organic-lab`` aggregator over HTTP only — no
+        ``/control/*`` calls.
+        """
+        if not (os.environ.get("LAB_API_URL") or os.environ.get("PYPOE_ENABLE_LAB")):
+            return
+        try:
+            from ...lab.slack_commands import register_lab_commands
+            from ...lab.http_client import LabClient
+        except ImportError as exc:
+            logger.info("Lab slash commands not loaded: %s", exc)
+            return
+
+        try:
+            self._lab_client = LabClient()
+            register_lab_commands(self.app, self._lab_client)
+            logger.info(
+                "Registered /lab-* slash commands against %s",
+                self._lab_client.base_url,
+            )
+        except Exception as exc:
+            logger.warning("Failed to register /lab-* commands: %s", exc)
     
     async def initialize(self):
         """Initialize the bot and fetch available models."""
