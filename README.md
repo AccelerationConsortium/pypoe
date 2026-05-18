@@ -30,6 +30,24 @@ single SQLite conversation history at `~/.pypoe/single_webchat_history.db`.
 All three write to and read from the same database, so conversations
 started in one interface continue in the others.
 
+### Optional: lab integration
+
+PyPoe also ships a read-only **lab interface layer** for the AC Organic
+Self-driving Lab. With `pip install -e ".[lab]"` you additionally get:
+
+- `pypoe lab-mcp` — a read-only MCP server (talk to the lab from
+  Claude Desktop / Code).
+- `pypoe lab-status` — one-shot aggregator health summary.
+- `/lab-*` Slack slash commands (auto-registered on `pypoe slack` when
+  `LAB_API_URL` is set).
+- `POST /alerts/kuma` webhook (auto-mounted on `pypoe web` under the
+  same condition) for Uptime Kuma alert investigation.
+
+The integration is **read-only at the device level**: there is no
+`control_action` tool and no `/control/*` calls. Control flows through
+the `lab-skills` SDK in `ac-organic-lab/`. See
+[docs/LAB_INTEGRATION.md](docs/LAB_INTEGRATION.md) for setup.
+
 ## Install
 
 PyPoe is editable-installed from a clone:
@@ -79,6 +97,10 @@ service, see the topic-specific docs below.
 - [docs/README_HISTORY.md](docs/README_HISTORY.md) — history database:
   where it lives, schema, Slack id scheme, sqlite cookbook, cleanup
   commands.
+- [docs/LAB_INTEGRATION.md](docs/LAB_INTEGRATION.md) — AC Organic
+  Self-driving Lab integration: MCP server, `/lab-*` slash commands,
+  Kuma alert webhook, environment variables, and the read-only
+  guard-rails (no `/control/*`).
 
 ## Project layout
 

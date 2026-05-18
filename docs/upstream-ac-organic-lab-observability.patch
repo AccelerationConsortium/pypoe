@@ -1,0 +1,41 @@
+From: PyPoe lab-integration work
+Subject: [docs] Add `agent_observation` to the documented event_type set
+
+Context
+=======
+
+PyPoe is adding a read-only MCP server for the AC Organic Self-driving
+Lab (PyPoe branch `feat/lab-integration`). One of its tools,
+`append_observation(device_id, summary, severity, extra?)`, journals
+agent findings to the aggregator via the existing
+`POST /api/ingest/events` endpoint with `event="agent_observation"`.
+
+The SQL column has no CHECK constraint, so this works today without
+any code change. This patch is documentation only — it adds
+`agent_observation` to the list of recognised `event_type` values in
+the `equipment_events` schema comment so future readers know it's a
+first-class event_type rather than a stray string.
+
+If reviewers prefer a different name (e.g. `agent_note`, `note`,
+`observation`), please say so before merging — PyPoe will adopt your
+choice and update before merging the PyPoe-side PR.
+
+Apply with:
+    git apply --directory=ac-organic-lab/ \
+        path/to/upstream-ac-organic-lab-observability.patch
+
+---
+
+diff --git a/docs/OBSERVABILITY.md b/docs/OBSERVABILITY.md
+--- a/docs/OBSERVABILITY.md
++++ b/docs/OBSERVABILITY.md
+@@ -116,7 +116,8 @@ CREATE TABLE IF NOT EXISTS equipment_events (
+     ts          TEXT    NOT NULL,           -- ISO-8601 UTC
+     device_id   TEXT    NOT NULL,           -- equipment.yaml key, e.g. "dose_every_well"
+     event_type  TEXT    NOT NULL,           -- "state_transition" | "error" | "startup" |
+-                                            -- "shutdown" | "calibration" | "claim_acquired"
++                                            -- "shutdown" | "calibration" | "claim_acquired" |
++                                            -- "agent_observation"
+     from_state  TEXT,                       -- for state_transition
+     to_state    TEXT,                       -- for state_transition
+     message     TEXT,                       -- human-readable description
