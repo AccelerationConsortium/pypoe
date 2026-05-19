@@ -30,8 +30,8 @@ def _mk_app(monkeypatch, *, claude_output: str = "Investigation summary"):
         )
         return f"ts-{len(posted)}"
 
-    async def fake_run_claude(monitor, msg):
-        investigations.append(f"{monitor}|{msg}")
+    async def fake_run_claude(monitor, msg, consult_models=()):
+        investigations.append((monitor, msg, consult_models))
         return claude_output
 
     monkeypatch.setattr(alert_routes, "_post_slack", fake_post_slack)
@@ -47,6 +47,38 @@ def _mk_app(monkeypatch, *, claude_output: str = "Investigation summary"):
         fastapi_app, client=lab, max_concurrent=2, slack_channel="#test"
     )
     return fastapi_app, posted, investigations
+
+
+def test_build_prompt_with_models_lists_each_model():
+    """The synthesised prompt MUST mention every configured consult model."""
+    prompt = alert_routes._build_investigation_prompt(
+        monitor="plateloc",
+        msg="No response from COM3",
+        consult_models=("GPT-5.5", "Claude-Opus-4.7", "Gemini-3.1-Pro"),
+    )
+    assert "plateloc" in prompt
+    assert "No response from COM3" in prompt
+    # Each model name appears in the listed block.
+    for m in ("GPT-5.5", "Claude-Opus-4.7", "Gemini-3.1-Pro"):
+        assert m in prompt
+    # Consult-block instructions present.
+    assert "consult_poe" in prompt
+    assert "synthesised" in prompt or "synthesis" in prompt.lower()
+    # Don't propose calling /control/*.
+    assert "do not propose" in prompt.lower()
+
+
+def test_build_prompt_no_models_uses_solo_block():
+    """Empty model list → no consult step, no synthesis block."""
+    prompt = alert_routes._build_investigation_prompt(
+        monitor="aggregator",
+        msg="down",
+        consult_models=(),
+    )
+    assert "Skip Poe consultation" in prompt
+    # Solo tail = 2-4 line summary instruction, no synthesis bullet rules.
+    assert "consult_poe" not in prompt
+    assert "synthesis" not in prompt.lower()
 
 
 def test_kuma_webhook_down_posts_investigating_then_summary(monkeypatch):
@@ -75,8 +107,14 @@ def test_kuma_webhook_down_posts_investigating_then_summary(monkeypatch):
     assert posted[0]["thread_ts"] is None
 
     # The background task should have run after the TestClient context
-    # closed (which awaits all pending tasks).
-    assert investigations == ["aggregator|connection refused"]
+    # closed (which awaits all pending tasks). The third element is the
+    # consult_models tuple captured from the loaded config (defaults).
+    assert len(investigations) == 1
+    monitor, msg_text, consult_models = investigations[0]
+    assert monitor == "aggregator"
+    assert msg_text == "connection refused"
+    # Defaults from ConsultSection — see pypoe.lab.config.
+    assert consult_models == ("GPT-5.5", "Claude-Opus-4.7")
     assert len(posted) == 2
     threaded = posted[1]
     assert threaded["thread_ts"] == "ts-1"  # threaded under the first message
@@ -132,7 +170,7 @@ def test_concurrency_bound_is_respected(monkeypatch):
         async def fake_post_slack(channel, text, thread_ts=None):
             return "ts"
 
-        async def fake_run_claude(monitor, msg):
+        async def fake_run_claude(monitor, msg, consult_models=()):
             async with peak["lock"]:
                 peak["current"] += 1
                 peak["value"] = max(peak["value"], peak["current"])

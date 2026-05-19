@@ -40,7 +40,7 @@ _MAX_CLAUDE_OUTPUT_CHARS = 3000
 _DEFAULT_MAX_CONCURRENT = 2
 
 
-_INVESTIGATION_PROMPT = """\
+_INVESTIGATION_PROMPT_HEAD = """\
 An Uptime Kuma alert just fired for monitor `{monitor}` (msg: {msg}).
 
 You have a `pypoe-lab` MCP server registered. Use it to investigate.
@@ -53,9 +53,30 @@ Steps:
    call `get_equipment_status()` and `recent_events(device_id)`. Inspect
    `status.equipment_status`, `status.message`, `status.last_error`, and
    `details.claimed_by`.
-3. If a failure looks ambiguous, call `consult_poe('GPT-4', ...)` for a
-   second opinion. If a human judgment call is needed, call
-   `ask_human(...)`.
+"""
+
+_CONSULT_BLOCK = """\
+3. Consult each Poe model below for an independent second opinion.
+   For EACH model, call:
+       consult_poe(model="<model>", question="<your question>", context="<lab state you gathered>")
+   The `context` you pass MUST include the relevant facts you read in
+   step 2 — the consulted model has no MCP access of its own, so the
+   string you supply is the ONLY information it sees.
+
+   Models to consult (one call per model):
+{models_block}
+
+   If a `consult_poe` call returns `returncode != 0` (Poe unreachable,
+   bad bot, missing API key, etc.), note the failure in your summary
+   but DO NOT abort — continue with the rest of the investigation.
+"""
+
+_NO_CONSULT_BLOCK = """\
+3. Skip Poe consultation (disabled in slack.yaml). If a human judgment
+   call is needed, call `ask_human(...)`.
+"""
+
+_INVESTIGATION_PROMPT_TAIL_CONSULT = """\
 4. Per affected device, call `append_observation(device_id, summary,
    severity)` to journal your finding.
 
@@ -64,8 +85,44 @@ calling `/control/*` directly. If recovery requires a control action,
 recommend it in plain English so a human or workflow can execute it via
 `lab-skills`.
 
-End with a 2–4 line summary suitable for a Slack thread reply.
+End with a synthesised Slack-thread reply that contains, in order:
+  - One-line headline of the most likely root cause.
+  - 1-2 bullets per consulted model summarising what it said,
+    explicitly noting any divergences (e.g. "GPT-5.5 thinks X;
+    Claude-Opus-4.7 thinks Y").
+  - 1-2 lines of YOUR own diagnosis, citing the lab evidence.
+  - If recovery requires a control action, recommend it in plain
+    English (NOT as a /control/* call).
+Keep the total reply under 2500 characters so it fits in one Slack
+message after truncation.
 """
+
+_INVESTIGATION_PROMPT_TAIL_SOLO = """\
+4. Per affected device, call `append_observation(device_id, summary,
+   severity)` to journal your finding.
+
+You CANNOT perform control actions through this server. Do not propose
+calling `/control/*` directly. If recovery requires a control action,
+recommend it in plain English so a human or workflow can execute it via
+`lab-skills`.
+
+End with a 2-4 line summary suitable for a Slack thread reply.
+"""
+
+
+def _build_investigation_prompt(
+    monitor: str, msg: str, consult_models: tuple[str, ...]
+) -> str:
+    """Compose the investigation prompt with the configured model list.
+
+    If ``consult_models`` is empty, switch to the solo prompt (no Poe
+    consultation step, no synthesis instructions).
+    """
+    head = _INVESTIGATION_PROMPT_HEAD.format(monitor=monitor, msg=msg)
+    if consult_models:
+        models_block = "\n".join(f"     - {m}" for m in consult_models)
+        return head + _CONSULT_BLOCK.format(models_block=models_block) + _INVESTIGATION_PROMPT_TAIL_CONSULT
+    return head + _NO_CONSULT_BLOCK + _INVESTIGATION_PROMPT_TAIL_SOLO
 
 
 class KumaHeartbeat(BaseModel):  # type: ignore[misc]
@@ -140,6 +197,10 @@ def register_alert_routes(
             thread_ts = None
 
         # Investigation runs in the background, bounded by the semaphore.
+        # Consult-model list is captured per request (so a slack.yaml edit
+        # takes effect on the next alert without a process restart, if the
+        # config singleton has been reload_config()-ed).
+        consult_models = cfg.consult.models if cfg.consult.enabled else ()
         asyncio.create_task(
             _investigate(
                 monitor_name=monitor_name,
@@ -147,6 +208,7 @@ def register_alert_routes(
                 channel=channel,
                 thread_ts=thread_ts,
                 semaphore=semaphore,
+                consult_models=consult_models,
             )
         )
         return {
@@ -171,10 +233,11 @@ async def _investigate(
     channel: str,
     thread_ts: Optional[str],
     semaphore: asyncio.Semaphore,
+    consult_models: tuple[str, ...] = (),
 ) -> None:
     async with semaphore:
         try:
-            output = await _run_claude(monitor_name, msg)
+            output = await _run_claude(monitor_name, msg, consult_models)
         except Exception as exc:
             output = f":x: Investigation failed to start: {exc}"
         if len(output) > _MAX_CLAUDE_OUTPUT_CHARS:
@@ -185,9 +248,11 @@ async def _investigate(
             logger.error("Failed to post investigation reply: %s", exc)
 
 
-async def _run_claude(monitor: str, msg: str) -> str:
+async def _run_claude(
+    monitor: str, msg: str, consult_models: tuple[str, ...] = ()
+) -> str:
     """Run ``claude -p <prompt>`` and return stdout (or a useful error)."""
-    prompt = _INVESTIGATION_PROMPT.format(monitor=monitor, msg=msg)
+    prompt = _build_investigation_prompt(monitor, msg, consult_models)
     try:
         proc = await asyncio.create_subprocess_exec(
             "claude",

@@ -86,7 +86,24 @@ lab:
   mcp:
     agent_source: claude-agent          # stamped into observations
     http_timeout_s: 10                  # aggregator HTTP read timeout
+  consult:
+    enabled: true                       # ask Poe models for second opinions
+    models:                             # one consult_poe call per entry
+      - GPT-5.5                         # names must match an entry in
+      - Claude-Opus-4.7                 # config/models.yaml::chat_models
 ```
+
+When `consult.enabled` is true (default), every `/alerts/kuma`
+investigation requires Claude to call `consult_poe` once per model
+listed under `consult.models`. Claude then synthesises all responses
+into a Slack thread reply that includes a headline, per-model
+bullets (with divergences flagged explicitly), and Claude's own
+diagnosis. Failures of individual `consult_poe` calls are noted in
+the summary, never aborts.
+
+Set `consult.enabled: false` (or leave `consult.models` empty) to
+keep Claude solo — the old prompt that suggested consultation only
+"if a failure looks ambiguous."
 
 To bring up a second lab in the same Slack workspace, give it a
 different prefix and channel:
@@ -106,7 +123,8 @@ Highest wins:
 2. Environment variables:
    `LAB_API_URL`, `LAB_SLACK_CHANNEL`, `LAB_SLACK_COMMAND_PREFIX`,
    `LAB_ALERT_MAX_CONCURRENT`, `LAB_MCP_AGENT_SOURCE`,
-   `LAB_MCP_HTTP_TIMEOUT`.
+   `LAB_MCP_HTTP_TIMEOUT`, `LAB_CONSULT_ENABLED`,
+   `LAB_CONSULT_MODELS` (comma-separated).
 3. Values in `slack.yaml`.
 4. Defaults baked into `pypoe.lab.config`.
 
