@@ -56,7 +56,7 @@ def setup_webui_credentials():
         with open(env_path, 'r') as f:
             existing_content = f.read()
     except Exception as e:
-        print(f"❌ Error reading .env file: {e}")
+        print(f"Error reading .env file: {e}")
         return
     
     print("Web UI Authentication Setup")
@@ -72,14 +72,14 @@ def setup_webui_credentials():
     password = getpass.getpass("Password: ").strip()
     
     if not password:
-        print("❌ Password cannot be empty. Setup cancelled.")
+        print("Password cannot be empty. Setup cancelled.")
         return
     
     # Confirm password
     confirm_password = getpass.getpass("Confirm password: ").strip()
     
     if password != confirm_password:
-        print("❌ Passwords don't match. Setup cancelled.")
+        print("Passwords don't match. Setup cancelled.")
         return
     
     print()
@@ -89,7 +89,7 @@ def setup_webui_credentials():
     # Try to detect Tailscale IP
     tailscale_ip = get_tailscale_ip()
     if tailscale_ip:
-        print(f"🎉 Detected Tailscale IP: {tailscale_ip}")
+        print(f"Detected Tailscale IP: {tailscale_ip}")
         use_tailscale = input("Use this IP for web server? (Y/n): ").strip().lower()
         if use_tailscale in ['', 'y', 'yes']:
             host_ip = tailscale_ip
@@ -115,7 +115,7 @@ def setup_webui_credentials():
             elif validate_ip_address(host_input):
                 host_ip = host_input
             else:
-                print(f"❌ Invalid IP address: {host_input}")
+                print(f"Invalid IP address: {host_input}")
                 return
     
     # Get port
@@ -126,7 +126,7 @@ def setup_webui_credentials():
             if not (1 <= port <= 65535):
                 raise ValueError("Port out of range")
         except ValueError:
-            print("❌ Invalid port number. Using default 8000.")
+            print("Invalid port number. Using default 8000.")
             port = 8000
     else:
         port = 8000
@@ -180,14 +180,14 @@ def setup_webui_credentials():
         with open(env_path, 'w') as f:
             f.write('\n'.join(filtered_lines))
         
-        print(f"✅ Web UI configuration saved to: {env_path}")
+        print(f"Web UI configuration saved to: {env_path}")
         print()
         print("Setup complete! You can now start the web interface:")
         print(f"   pypoe web")
         print()
         print(f"Access it at: http://{host_ip}:{port}")
         if host_ip.startswith('100.'):
-            print("💡 Make sure Tailscale is running on devices you want to access from")
+            print("Make sure Tailscale is running on devices you want to access from")
         print()
         print("Command examples:")
         print(f"   pypoe web                    # Use settings from .env")
@@ -195,7 +195,7 @@ def setup_webui_credentials():
         print(f"   pypoe web --port {port}      # Override port")
 
     except Exception as e:
-        print(f"❌ Error updating .env file: {e}")
+        print(f"Error updating .env file: {e}")
         print("You can manually add these lines to your .env file:")
         print(f"PYPOE_WEB_USERNAME={username}")
         print(f"PYPOE_WEB_PASSWORD={password}")

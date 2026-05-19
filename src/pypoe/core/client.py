@@ -52,7 +52,7 @@ class ContentProcessor:
         def replace_video(match):
             alt_text = match.group(1) or "Generated Video"
             url = match.group(2)
-            return f'<video controls style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" poster="" preload="metadata"><source src="{url}" type="video/mp4">Your browser does not support the video tag. <a href="{url}" target="_blank" class="video-fallback-link" style="color: #3498db; text-decoration: none;">🎬 {alt_text} (Click to open)</a></video>'
+            return f'<video controls style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" poster="" preload="metadata"><source src="{url}" type="video/mp4">Your browser does not support the video tag. <a href="{url}" target="_blank" class="video-fallback-link" style="color: #3498db; text-decoration: none;">{alt_text} (Click to open)</a></video>'
         
         processed = self.video_pattern.sub(replace_video, processed)
         
@@ -63,7 +63,7 @@ class ContentProcessor:
             # Skip if this looks like a video URL that should have been caught by video pattern
             if any(ext in url.lower() for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv']):
                 return match.group(0)  # Return original text
-            return f'<img src="{url}" alt="{alt_text}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" loading="lazy" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'inline-block\';" /><a href="{url}" target="_blank" class="image-fallback-link" style="display: none; color: #3498db; text-decoration: none;">🖼️ {alt_text} (Click to open)</a>'
+            return f'<img src="{url}" alt="{alt_text}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" loading="lazy" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'inline-block\';" /><a href="{url}" target="_blank" class="image-fallback-link" style="display: none; color: #3498db; text-decoration: none;">{alt_text} (Click to open)</a>'
         
         processed = self.image_pattern.sub(replace_image, processed)
         return processed
@@ -294,26 +294,26 @@ class PoeChatClient:
                 available_bots = await self.get_available_bots()
                 claude_alternatives = [bot for bot in available_bots if "Claude" in bot]
                 
-                error_message = f"❌ Bot '{bot_name}' is not accessible (private or deprecated).\n\n"
+                error_message = f"Bot '{bot_name}' is not accessible (private or deprecated).\n\n"
                 if claude_alternatives:
-                    error_message += f"🤖 Try these Claude alternatives instead:\n"
+                    error_message += f"Try these Claude alternatives instead:\n"
                     for alt in claude_alternatives[:3]:  # Show top 3
                         error_message += f"  • {alt}\n"
                 else:
-                    error_message += f"🤖 Try these available bots instead:\n"
+                    error_message += f"Try these available bots instead:\n"
                     for alt in available_bots[:5]:  # Show top 5
                         error_message += f"  • {alt}\n"
                 
                 raise ValueError(error_message)
             elif "Bot does not exist" in error_msg:
                 available_bots = await self.get_available_bots()
-                error_message = f"❌ Bot '{bot_name}' does not exist.\n\n"
-                error_message += f"🤖 Try these available bots instead:\n"
+                error_message = f"Bot '{bot_name}' does not exist.\n\n"
+                error_message += f"Try these available bots instead:\n"
                 for alt in available_bots[:5]:  # Show top 5
                     error_message += f"  • {alt}\n"
                 raise ValueError(error_message)
             elif "insufficient" in error_msg.lower() or "quota" in error_msg.lower():
-                raise ValueError(f"❌ Insufficient credits or quota exceeded. Please check your Poe subscription.")
+                raise ValueError(f"Insufficient credits or quota exceeded. Please check your Poe subscription.")
             else:
                 # Re-raise the original error for other cases
                 raise e
@@ -398,26 +398,26 @@ class PoeChatClient:
                 available_bots = await self.get_available_bots()
                 claude_alternatives = [bot for bot in available_bots if "Claude" in bot]
                 
-                error_message = f"❌ Bot '{bot_name}' is not accessible (private or deprecated).\n\n"
+                error_message = f"Bot '{bot_name}' is not accessible (private or deprecated).\n\n"
                 if claude_alternatives:
-                    error_message += f"🤖 Try these Claude alternatives instead:\n"
+                    error_message += f"Try these Claude alternatives instead:\n"
                     for alt in claude_alternatives[:3]:  # Show top 3
                         error_message += f"  • {alt}\n"
                 else:
-                    error_message += f"🤖 Try these available bots instead:\n"
+                    error_message += f"Try these available bots instead:\n"
                     for alt in available_bots[:5]:  # Show top 5
                         error_message += f"  • {alt}\n"
                 
                 raise ValueError(error_message)
             elif "Bot does not exist" in error_msg:
                 available_bots = await self.get_available_bots()
-                error_message = f"❌ Bot '{bot_name}' does not exist.\n\n"
-                error_message += f"🤖 Try these available bots instead:\n"
+                error_message = f"Bot '{bot_name}' does not exist.\n\n"
+                error_message += f"Try these available bots instead:\n"
                 for alt in available_bots[:5]:  # Show top 5
                     error_message += f"  • {alt}\n"
                 raise ValueError(error_message)
             elif "insufficient" in error_msg.lower() or "quota" in error_msg.lower():
-                raise ValueError(f"❌ Insufficient credits or quota exceeded. Please check your Poe subscription.")
+                raise ValueError(f"Insufficient credits or quota exceeded. Please check your Poe subscription.")
             else:
                 # Re-raise the original error for other cases
                 raise e
@@ -516,15 +516,15 @@ class PoeChatClient:
                         topic = ' '.join(words[:5])
                     
                     if topic and topic.lower() not in ['error', 'failed', 'sorry', 'cannot']:
-                        print(f"✅ Generated topic using {model}: '{topic}'")
+                        print(f"Generated topic using {model}: '{topic}'")
                         return topic
                         
                 except Exception as model_error:
-                    print(f"⚠️  Failed to generate topic with {model}: {model_error}")
+                    print(f"Failed to generate topic with {model}: {model_error}")
                     continue
             
             # If all models fail, use fallback
-            print("⚠️  All models failed for topic generation, using fallback")
+            print("All models failed for topic generation, using fallback")
             return self._generate_fallback_topic(first_message)
             
         except Exception as e:

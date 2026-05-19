@@ -52,7 +52,7 @@ class ProgressTracker:
         remaining_time = estimated_total - elapsed_time
         
         # Status indicator
-        status = "✅" if success else "❌"
+        status = "" if success else ""
         
         # Progress bar
         bar_width = 30
@@ -62,7 +62,7 @@ class ProgressTracker:
         # Real-time update line
         print(f"\r{status} {model_name:<25} [{bar}] {progress_pct:5.1f}% "
               f"({self.tested_models}/{self.total_models}) "
-              f"✅{self.working_models} ❌{self.failed_models} "
+              f"{self.working_models}{self.failed_models} "
               f"⏱️{response_time:.1f}s "
               f"ETA: {remaining_time/60:.1f}m", end="", flush=True)
         
@@ -165,7 +165,7 @@ class ModelTester:
 
     async def test_chat_models(self, client) -> Dict:
         """Test only chat models with real-time progress tracking."""
-        print(f"🔍 Getting model list from PyPoe core client...")
+        print(f"Getting model list from PyPoe core client...")
         
         # Get actual models from the client
         all_models = await client.get_available_bots()
@@ -173,12 +173,12 @@ class ModelTester:
         # Categorize models
         self.chat_models, self.image_models, self.video_models = self.categorize_models(all_models)
         
-        print(f"📊 Found {len(all_models)} total models:")
-        print(f"   💬 Chat models: {len(self.chat_models)}")
-        print(f"   🎨 Image models: {len(self.image_models)}")
-        print(f"   🎬 Video models: {len(self.video_models)}")
+        print(f"Found {len(all_models)} total models:")
+        print(f"   Chat models: {len(self.chat_models)}")
+        print(f"   Image models: {len(self.image_models)}")
+        print(f"   Video models: {len(self.video_models)}")
         print()
-        print(f"🧪 Testing {len(self.chat_models)} chat models...")
+        print(f"Testing {len(self.chat_models)} chat models...")
         print("=" * 80)
         
         # Initialize progress tracker
@@ -221,40 +221,40 @@ class ModelTester:
 
     def print_summary(self, results: Dict):
         """Print a comprehensive summary of test results."""
-        print("📊 CHAT MODEL TESTING SUMMARY")
+        print("CHAT MODEL TESTING SUMMARY")
         print("=" * 80)
         
         successful = results['successful']
         failed = results['failed']
         total = results['total_models']
             
-        print(f"🕒 Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"📈 Results: {successful}/{total} chat models working ({successful/total*100:.1f}%)")
-        print(f"✅ Working: {successful}")
-        print(f"❌ Failed: {failed}")
+        print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Results: {successful}/{total} chat models working ({successful/total*100:.1f}%)")
+        print(f"Working: {successful}")
+        print(f"Failed: {failed}")
         
         if self.image_models:
-            print(f"🎨 Image models found (not tested): {len(self.image_models)}")
+            print(f"Image models found (not tested): {len(self.image_models)}")
             for model in self.image_models[:5]:  # Show first 5
                 print(f"   • {model}")
             if len(self.image_models) > 5:
                 print(f"   ... and {len(self.image_models) - 5} more")
         
         if self.video_models:
-            print(f"🎬 Video models found (not tested): {len(self.video_models)}")
+            print(f"Video models found (not tested): {len(self.video_models)}")
             for model in self.video_models[:5]:  # Show first 5
                 print(f"   • {model}")
             if len(self.video_models) > 5:
                 print(f"   ... and {len(self.video_models) - 5} more")
         
         if failed > 0:
-            print(f"\n❌ FAILED CHAT MODELS ({failed}):")
+            print(f"\nFAILED CHAT MODELS ({failed}):")
             print("-" * 50)
             for model_name in self.failed_models:
                 result = self.model_results[model_name]
                 print(f"  • {model_name:<30} - {result['response']}")
         
-        print(f"\n✅ WORKING CHAT MODELS ({successful}):")
+        print(f"\nWORKING CHAT MODELS ({successful}):")
         print("-" * 50)
         for model_name in self.working_models:
             result = self.model_results[model_name]
@@ -262,7 +262,7 @@ class ModelTester:
 
     def offer_to_update_client(self):
         """Offer to update the client file with working models."""
-        print(f"\n🔧 UPDATE CLIENT CODE")
+        print(f"\nUPDATE CLIENT CODE")
         print("=" * 40)
         
         print("Would you like to update the PyPoe client to comment out non-working chat models?")
@@ -276,7 +276,7 @@ class ModelTester:
             self._update_client_file()
         else:
             print("Skipping client update.")
-            print("\n💡 You can manually update your model list using the summary above.")
+            print("\nYou can manually update your model list using the summary above.")
 
     def _update_client_file(self):
         """Actually update the client file."""
@@ -284,11 +284,11 @@ class ModelTester:
             import pypoe.core.client
             client_file = Path(pypoe.core.client.__file__)
         except ImportError:
-            print("❌ Could not import pypoe.core.client")
+            print("Could not import pypoe.core.client")
             return
         
         if not client_file.exists():
-            print(f"❌ Client file not found: {client_file}")
+            print(f"Client file not found: {client_file}")
             return
         
         try:
@@ -300,7 +300,7 @@ class ModelTester:
             with open(backup_file, 'w') as f:
                 f.write(content)
             
-            print(f"📁 Created backup: {backup_file}")
+            print(f"Created backup: {backup_file}")
             
             # Update only failed chat models (leave image/video models alone)
             updated_content = self._comment_out_failed_models(content)
@@ -308,13 +308,13 @@ class ModelTester:
             with open(client_file, 'w') as f:
                 f.write(updated_content)
             
-            print(f"✅ Updated: {client_file}")
-            print(f"📊 Commented out {len(self.failed_models)} non-working chat models")
-            print(f"📊 Kept {len(self.working_models)} working chat models active")
-            print(f"📊 Left {len(self.image_models)} image models and {len(self.video_models)} video models for future testing")
+            print(f"Updated: {client_file}")
+            print(f"Commented out {len(self.failed_models)} non-working chat models")
+            print(f"Kept {len(self.working_models)} working chat models active")
+            print(f"Left {len(self.image_models)} image models and {len(self.video_models)} video models for future testing")
             
         except Exception as e:
-            print(f"❌ Error updating client file: {e}")
+            print(f"Error updating client file: {e}")
 
     def _comment_out_failed_models(self, content: str) -> str:
         """Comment out only failed chat models, leave image/video models alone."""
@@ -331,7 +331,7 @@ class ModelTester:
                     # Comment out failed chat models only
                     indent = len(line) - len(line.lstrip())
                     error_reason = self.model_results[model_name]['response']
-                    updated_lines.append(f'{" " * indent}# "{model_name}",  # ❌ {error_reason}')
+                    updated_lines.append(f'{" " * indent}# "{model_name}",  # {error_reason}')
                 else:
                     updated_lines.append(line)
             else:
@@ -341,11 +341,11 @@ class ModelTester:
 
     def print_recommendations(self):
         """Print recommendations for using the working models."""
-        print(f"\n💡 RECOMMENDATIONS")
+        print(f"\nRECOMMENDATIONS")
         print("=" * 40)
         
         if self.working_models:
-            print("🎯 Recommended chat models to use:")
+            print("Recommended chat models to use:")
             
             # Categorize recommendations by provider
             openai_models = [m for m in self.working_models if any(pattern in m for pattern in ['GPT', 'o1', 'o3', 'o4'])]
@@ -354,24 +354,24 @@ class ModelTester:
             deepseek_models = [m for m in self.working_models if 'DeepSeek' in m]
             
             if openai_models:
-                print(f"   🤖 OpenAI: {', '.join(openai_models[:3])}")
+                print(f"   OpenAI: {', '.join(openai_models[:3])}")
             if anthropic_models:
-                print(f"   🧠 Anthropic: {', '.join(anthropic_models[:3])}")
+                print(f"   Anthropic: {', '.join(anthropic_models[:3])}")
             if google_models:
-                print(f"   🔍 Google: {', '.join(google_models[:3])}")
+                print(f"   Google: {', '.join(google_models[:3])}")
             if deepseek_models:
-                print(f"   🌊 DeepSeek: {', '.join(deepseek_models[:2])}")
+                print(f"   DeepSeek: {', '.join(deepseek_models[:2])}")
                 
-            print(f"\n🎨 Image generation models found but not tested: {len(self.image_models)}")
-            print(f"🎬 Video generation models found but not tested: {len(self.video_models)}")
-            print("\n💡 Future enhancement: Add image/video model testing modes")
+            print(f"\nImage generation models found but not tested: {len(self.image_models)}")
+            print(f"Video generation models found but not tested: {len(self.video_models)}")
+            print("\nFuture enhancement: Add image/video model testing modes")
         else:
-            print("❌ No working chat models found!")
+            print("No working chat models found!")
             print("Check your POE_API_KEY and internet connection.")
 
 async def main():
     """Main function to run the model testing utility."""
-    print("🧪 PyPoe Model Update Utility v2.0")
+    print("PyPoe Model Update Utility v2.0")
     print("=" * 50)
     print("This tool will test chat models from your PyPoe core client configuration.")
     print("Image and video models will be identified but not tested (yet).")
@@ -379,7 +379,7 @@ async def main():
     
     # Check if POE_API_KEY is set
     if not os.getenv('POE_API_KEY'):
-        print("❌ POE_API_KEY not found in environment")
+        print("POE_API_KEY not found in environment")
         print("Please set your POE API key:")
         print("  export POE_API_KEY='your-api-key-here'")
         print("Get your key from: https://poe.com/api_key")
@@ -389,7 +389,7 @@ async def main():
         client = PoeChatClient(enable_history=False)
         tester = ModelTester()
         
-        print("🚀 Starting chat model testing with real-time progress...")
+        print("Starting chat model testing with real-time progress...")
         print()
         
         # Test chat models only
@@ -406,13 +406,13 @@ async def main():
         
         await client.close()
         
-        print(f"\n✅ Chat model testing completed!")
-        print(f"📊 Results: {len(tester.working_models)} working, {len(tester.failed_models)} failed")
+        print(f"\nChat model testing completed!")
+        print(f"Results: {len(tester.working_models)} working, {len(tester.failed_models)} failed")
         
         return 0
         
     except Exception as e:
-        print(f"❌ Error during testing: {e}")
+        print(f"Error during testing: {e}")
         return 1
 
 if __name__ == "__main__":

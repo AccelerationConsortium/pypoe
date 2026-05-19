@@ -25,15 +25,15 @@ def test_chat_scrolling():
     
     pytest src/pypoe/tests/test_chat_scrolling.py::test_chat_scrolling -s
     """
-    print("🚀 Starting PyPoe web interface...")
-    print("📝 Testing chat scrolling functionality:")
+    print("Starting PyPoe web interface...")
+    print("Testing chat scrolling functionality:")
     print("   - Auto-scroll to bottom when loading conversations")
     print("   - Auto-scroll during message streaming")
     print("   - Navigation buttons (Home/End keys)")
     print("   - Smooth scrolling behavior")
     print("   - Mobile responsive design")
     print()
-    print("🔧 Manual testing steps:")
+    print("Manual testing steps:")
     print("   1. Select a conversation with many messages")
     print("   2. Verify auto-scroll to latest message")
     print("   3. Test Home/End key navigation")
@@ -41,7 +41,7 @@ def test_chat_scrolling():
     print("   5. Send new messages and verify auto-scroll")
     print("   6. Test on mobile view (resize browser)")
     print()
-    print("🌐 Opening browser...")
+    print("Opening browser...")
     
     # Give a moment for output to be visible
     time.sleep(2)

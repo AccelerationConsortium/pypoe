@@ -23,7 +23,7 @@ from typing import Optional, Tuple, Dict
 def print_header():
     """Print a nice header"""
     print("=" * 60)
-    print("🌐 PyPoe Tailscale Setup")
+    print("PyPoe Tailscale Setup")
     print("=" * 60)
     print("This script will help you set up PyPoe for remote access via Tailscale.")
     print()
@@ -35,20 +35,20 @@ def check_tailscale_installed() -> bool:
                               capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             version = result.stdout.strip()
-            print(f"✅ Tailscale is installed: {version}")
+            print(f"Tailscale is installed: {version}")
             return True
         else:
-            print("❌ Tailscale command failed")
+            print("Tailscale command failed")
             return False
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        print("❌ Tailscale is not installed or not in PATH")
+        print("Tailscale is not installed or not in PATH")
         return False
 
 def install_tailscale_instructions():
     """Provide installation instructions for Tailscale"""
     system = platform.system().lower()
     
-    print("\n📦 Tailscale Installation Instructions:")
+    print("\nTailscale Installation Instructions:")
     print("-" * 40)
     
     if system == "darwin":  # macOS
@@ -77,16 +77,16 @@ def check_tailscale_status() -> Tuple[bool, Optional[str]]:
         if result.returncode == 0:
             status_lines = result.stdout.strip().split('\n')
             if status_lines and not any('not logged in' in line.lower() for line in status_lines):
-                print("✅ Tailscale is running and connected")
+                print("Tailscale is running and connected")
                 return True, result.stdout
             else:
-                print("⚠️  Tailscale is installed but not logged in")
+                print("Tailscale is installed but not logged in")
                 return False, result.stdout
         else:
-            print("❌ Tailscale status check failed")
+            print("Tailscale status check failed")
             return False, None
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"❌ Failed to check Tailscale status: {e}")
+        print(f"Failed to check Tailscale status: {e}")
         return False, None
 
 def get_tailscale_ip() -> Optional[str]:
@@ -100,22 +100,22 @@ def get_tailscale_ip() -> Optional[str]:
             for line in lines:
                 line = line.strip()
                 if line and not ':' in line:  # IPv4 (no colons)
-                    print(f"✅ Tailscale IPv4: {line}")
+                    print(f"Tailscale IPv4: {line}")
                     return line
             # If no IPv4 found, use first line
             if lines:
                 ip = lines[0].strip()
-                print(f"✅ Tailscale IP: {ip}")
+                print(f"Tailscale IP: {ip}")
                 return ip
-        print("❌ Failed to get Tailscale IP")
+        print("Failed to get Tailscale IP")
         return None
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"❌ Failed to get Tailscale IP: {e}")
+        print(f"Failed to get Tailscale IP: {e}")
         return None
 
 def start_tailscale():
     """Help user start Tailscale"""
-    print("\n🚀 Starting Tailscale...")
+    print("\nStarting Tailscale...")
     print("We'll try to start Tailscale for you.")
     
     system = platform.system().lower()
@@ -135,11 +135,11 @@ def start_tailscale():
             print("Please start Tailscale manually on your system")
             return False
         
-        print("✅ Attempted to start Tailscale daemon")
+        print("Attempted to start Tailscale daemon")
         return True
         
     except Exception as e:
-        print(f"⚠️  Could not start Tailscale automatically: {e}")
+        print(f"Could not start Tailscale automatically: {e}")
         print("Please start Tailscale manually:")
         if system == "darwin":
             print("  - Open Tailscale app from Applications")
@@ -150,7 +150,7 @@ def start_tailscale():
 
 def login_tailscale():
     """Help user log in to Tailscale"""
-    print("\n🔑 Logging in to Tailscale...")
+    print("\nLogging in to Tailscale...")
     print("This will open a browser window for authentication.")
     
     try:
@@ -159,10 +159,10 @@ def login_tailscale():
                               capture_output=True, text=True, timeout=30)
         
         if result.returncode == 0:
-            print("✅ Tailscale login successful!")
+            print("Tailscale login successful!")
             return True
         else:
-            print(f"❌ Tailscale login failed: {result.stderr}")
+            print(f"Tailscale login failed: {result.stderr}")
             print("\nManual login steps:")
             print("1. Run: tailscale up")
             print("2. Follow the browser instructions")
@@ -170,14 +170,14 @@ def login_tailscale():
             return False
             
     except subprocess.TimeoutExpired:
-        print("⚠️  Login process timed out")
+        print("Login process timed out")
         print("Please complete the login manually:")
         print("1. Run: tailscale up")
         print("2. Follow the browser instructions")
         print("3. Run this script again")
         return False
     except Exception as e:
-        print(f"❌ Error during login: {e}")
+        print(f"Error during login: {e}")
         return False
 
 def find_env_file() -> Optional[Path]:
@@ -189,12 +189,12 @@ def find_env_file() -> Optional[Path]:
     
     for path in possible_paths:
         if path.exists():
-            print(f"📁 Found existing env file: {path}")
+            print(f"Found existing env file: {path}")
             return path
     
     # Create a new one in the project root
     env_path = Path.cwd() / ".env"
-    print(f"📁 Will create new env file: {env_path}")
+    print(f"Will create new env file: {env_path}")
     return env_path
 
 def update_env_file(tailscale_ip: str) -> bool:
@@ -246,11 +246,11 @@ def update_env_file(tailscale_ip: str) -> bool:
             f.write(f"# - Tailscale: http://{tailscale_ip}:8000\n")
             f.write("# - LAN: http://YOUR_LOCAL_IP:8000\n")
         
-        print(f"✅ Updated environment file: {env_path}")
+        print(f"Updated environment file: {env_path}")
         return True
         
     except Exception as e:
-        print(f"❌ Failed to update env file: {e}")
+        print(f"Failed to update env file: {e}")
         return False
 
 def set_current_session_env(tailscale_ip: str):
@@ -258,13 +258,13 @@ def set_current_session_env(tailscale_ip: str):
     os.environ['PYPOE_HOST'] = '0.0.0.0'
     os.environ['PYPOE_PORT'] = os.environ.get('PYPOE_PORT', '8000')
     
-    print("✅ Set environment variables for current session:")
+    print("Set environment variables for current session:")
     print(f"   PYPOE_HOST=0.0.0.0 (binds to all interfaces)")
     print(f"   PYPOE_PORT={os.environ['PYPOE_PORT']}")
 
 def test_connection(tailscale_ip: str, port: str = "8000"):
     """Test if the connection setup would work"""
-    print(f"\n🧪 Testing connection setup...")
+    print(f"\nTesting connection setup...")
     print(f"Web interface will be accessible at:")
     print(f"  • Local: http://localhost:{port}")
     print(f"  • Local: http://127.0.0.1:{port}")
@@ -279,9 +279,9 @@ def test_connection(tailscale_ip: str, port: str = "8000"):
         sock.close()
         
         if result == 0:
-            print(f"⚠️  Port {port} is already in use")
+            print(f"Port {port} is already in use")
         else:
-            print(f"✅ Port {port} is available")
+            print(f"Port {port} is available")
             
     except Exception as e:
         print(f"ℹ️  Could not test port availability: {e}")
@@ -289,9 +289,9 @@ def test_connection(tailscale_ip: str, port: str = "8000"):
 def print_next_steps(tailscale_ip: str, port: str = "8000"):
     """Print what to do next"""
     print("\n" + "=" * 60)
-    print("🎉 Tailscale Setup Complete!")
+    print("Tailscale Setup Complete!")
     print("=" * 60)
-    print("\n📋 Next Steps:")
+    print("\nNext Steps:")
     print("1. Start PyPoe web interface:")
     print("   pypoe web")
     print()
@@ -304,13 +304,13 @@ def print_next_steps(tailscale_ip: str, port: str = "8000"):
     print("3. Optional: Set up web authentication for security:")
     print("   python scripts/setup/setup_webui.py")
     print()
-    print("💡 Tips:")
+    print("Tips:")
     print("- Server binds to 0.0.0.0 for maximum accessibility")
     print("- Make sure Tailscale is running on devices you want to access from")
     print("- Your Tailscale IP might change if you reinstall Tailscale")
     print("- Run this script again if you need to update the IP")
     print()
-    print("🔧 Troubleshooting:")
+    print("Troubleshooting:")
     print("- If connection fails, check Tailscale status: tailscale status")
     print("- Verify IP address: tailscale ip")
     print("- Check firewall settings on your system")
@@ -340,40 +340,40 @@ def get_network_interfaces() -> Dict[str, str]:
                                 interfaces[current_interface] = ip
                             break
     except Exception as e:
-        print(f"⚠️  Could not detect network interfaces: {e}")
+        print(f"Could not detect network interfaces: {e}")
     
     return interfaces
 
 def print_network_info(tailscale_ip: str):
     """Print network interface information"""
-    print("\n🌐 Available Network Interfaces:")
+    print("\nAvailable Network Interfaces:")
     print("-" * 40)
     
     interfaces = get_network_interfaces()
     
     # Always show localhost
-    print("📍 Localhost (same machine):")
+    print("Localhost (same machine):")
     print("   • http://localhost:8000")
     print("   • http://127.0.0.1:8000")
     print()
     
     # Show Tailscale
-    print("📍 Tailscale (remote access):")
+    print("Tailscale (remote access):")
     print(f"   • http://{tailscale_ip}:8000")
     print()
     
     # Show other interfaces
     if interfaces:
-        print("📍 Other Network Interfaces:")
+        print("Other Network Interfaces:")
         for interface, ip in interfaces.items():
             if ip != tailscale_ip:  # Don't duplicate Tailscale IP
                 print(f"   • {interface}: http://{ip}:8000")
     else:
-        print("📍 Other Network Interfaces:")
+        print("Other Network Interfaces:")
         print("   • Could not detect automatically")
     
     print()
-    print("💡 The server binds to 0.0.0.0:8000, so it's accessible from all interfaces above")
+    print("The server binds to 0.0.0.0:8000, so it's accessible from all interfaces above")
 
 def main():
     """Main setup function"""
@@ -388,7 +388,7 @@ def main():
     is_running, status = check_tailscale_status()
     
     if not is_running:
-        print("\n🔧 Tailscale needs to be started and logged in...")
+        print("\nTailscale needs to be started and logged in...")
         
         # Try to start Tailscale
         if start_tailscale():
@@ -402,21 +402,21 @@ def main():
         # If still not running, try to log in
         if not is_running:
             if not login_tailscale():
-                print("\n❌ Could not set up Tailscale automatically.")
+                print("\nCould not set up Tailscale automatically.")
                 print("Please set up Tailscale manually and run this script again.")
                 return 1
     
     # Step 3: Get Tailscale IP
     tailscale_ip = get_tailscale_ip()
     if not tailscale_ip:
-        print("❌ Could not get Tailscale IP address")
+        print("Could not get Tailscale IP address")
         return 1
     
     # Step 4: Update configuration
-    print(f"\n⚙️  Configuring PyPoe for Tailscale IP: {tailscale_ip}")
+    print(f"\nConfiguring PyPoe for Tailscale IP: {tailscale_ip}")
     
     if not update_env_file(tailscale_ip):
-        print("❌ Failed to update configuration file")
+        print("Failed to update configuration file")
         return 1
     
     # Step 5: Set current session environment
@@ -438,8 +438,8 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\n\n👋 Setup cancelled by user")
+        print("\n\nSetup cancelled by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\nUnexpected error: {e}")
         sys.exit(1) 

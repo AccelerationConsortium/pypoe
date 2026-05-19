@@ -21,12 +21,12 @@ def run_bot():
         from .bot import main
         return asyncio.run(main())
     except ImportError as e:
-        print(f"❌ Failed to import PyPoe Slack integration: {e}")
-        print("\n💡 Make sure you have installed PyPoe:")
+        print(f"Failed to import PyPoe Slack integration: {e}")
+        print("\nMake sure you have installed PyPoe:")
         print("   pip install -e .")
-        print("\n💡 And install Slack dependencies:")
+        print("\nAnd install Slack dependencies:")
         print("   pip install slack-bolt slack-sdk")
-        print("\n💡 Or use the CLI command:")
+        print("\nOr use the CLI command:")
         print("   pypoe slack-bot")
         sys.exit(1)
 

@@ -45,7 +45,7 @@ def ensure_env_file_exists():
     exists = os.path.exists(env_path)
     
     if not exists:
-        print(f"❌ No .env file found at: {env_path}")
+        print(f"No .env file found at: {env_path}")
         print("Please run 'python scripts/setup/setup_credentials.py' first to set up your API key.")
     
     return exists, env_path 

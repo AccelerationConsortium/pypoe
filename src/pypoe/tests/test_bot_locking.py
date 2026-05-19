@@ -33,7 +33,7 @@ class BotLockingTester:
     
     def test_rest_api_bot_locking(self) -> Dict[str, Any]:
         """Test bot locking via REST API"""
-        print("🧪 Testing REST API bot locking...")
+        print("Testing REST API bot locking...")
         
         # Step 1: Create a new conversation
         try:
@@ -45,7 +45,7 @@ class BotLockingTester:
                 return {"status": "fail", "error": f"Failed to create conversation: {create_response.status_code}"}
             
             conversation_id = create_response.json().get("conversation_id")
-            print(f"✅ Created conversation: {conversation_id}")
+            print(f"Created conversation: {conversation_id}")
             
             # Step 2: Send first message with original bot
             first_message_response = self.session.post(
@@ -55,7 +55,7 @@ class BotLockingTester:
             if first_message_response.status_code != 200:
                 return {"status": "fail", "error": f"Failed to send first message: {first_message_response.status_code}"}
             
-            print("✅ Sent first message with Claude-Sonnet-4.6")
+            print("Sent first message with Claude-Sonnet-4.6")
             
             # Step 3: Try to send second message with different bot (should fail)
             second_message_response = self.session.post(
@@ -66,7 +66,7 @@ class BotLockingTester:
             if second_message_response.status_code == 400:
                 error_detail = second_message_response.json().get("detail", "")
                 if "Cannot change bot mid-conversation" in error_detail:
-                    print("✅ Bot locking correctly prevented bot change")
+                    print("Bot locking correctly prevented bot change")
                     return {
                         "status": "pass",
                         "conversation_id": conversation_id,
@@ -84,7 +84,7 @@ class BotLockingTester:
     
     async def test_websocket_bot_locking(self) -> Dict[str, Any]:
         """Test bot locking via WebSocket"""
-        print("🧪 Testing WebSocket bot locking...")
+        print("Testing WebSocket bot locking...")
         
         # Step 1: Create a new conversation via REST API
         try:
@@ -96,7 +96,7 @@ class BotLockingTester:
                 return {"status": "fail", "error": f"Failed to create conversation: {create_response.status_code}"}
             
             conversation_id = create_response.json().get("conversation_id")
-            print(f"✅ Created conversation: {conversation_id}")
+            print(f"Created conversation: {conversation_id}")
             
             # Step 2: Connect to WebSocket and send first message
             ws_url = f"{WS_URL}/ws/chat/{conversation_id}"
@@ -128,7 +128,7 @@ class BotLockingTester:
                     except asyncio.TimeoutError:
                         break
                 
-                print("✅ Sent first message via WebSocket with Gemini-3-Flash")
+                print("Sent first message via WebSocket with Gemini-3-Flash")
                 
                 # Step 3: Try to send second message with different bot (should fail)
                 second_message = {
@@ -143,7 +143,7 @@ class BotLockingTester:
                     error_data = json.loads(error_response)
                     
                     if error_data.get("type") == "error" and "Cannot change bot mid-conversation" in error_data.get("content", ""):
-                        print("✅ WebSocket bot locking correctly prevented bot change")
+                        print("WebSocket bot locking correctly prevented bot change")
                         return {
                             "status": "pass",
                             "conversation_id": conversation_id,
@@ -162,7 +162,7 @@ class BotLockingTester:
     
     def test_new_conversation_bot_selection(self) -> Dict[str, Any]:
         """Test that new conversations allow bot selection"""
-        print("🧪 Testing new conversation bot selection...")
+        print("Testing new conversation bot selection...")
         
         try:
             # Create conversation with one bot
@@ -174,7 +174,7 @@ class BotLockingTester:
                 return {"status": "fail", "error": f"Failed to create conversation: {create_response.status_code}"}
             
             conversation_id = create_response.json().get("conversation_id")
-            print(f"✅ Created conversation with GPT-4-Turbo: {conversation_id}")
+            print(f"Created conversation with GPT-4-Turbo: {conversation_id}")
             
             # Send first message (this should work since conversation has no messages yet)
             first_message_response = self.session.post(
@@ -183,7 +183,7 @@ class BotLockingTester:
             )
             
             if first_message_response.status_code == 200:
-                print("✅ New conversation correctly allowed bot selection")
+                print("New conversation correctly allowed bot selection")
                 return {
                     "status": "pass",
                     "conversation_id": conversation_id,
@@ -198,20 +198,20 @@ class BotLockingTester:
     
     def cleanup_test_conversations(self, conversation_ids: list):
         """Clean up test conversations"""
-        print("🧹 Cleaning up test conversations...")
+        print("Cleaning up test conversations...")
         for conv_id in conversation_ids:
             try:
                 delete_response = self.session.delete(f"{BASE_URL}/api/conversation/{conv_id}")
                 if delete_response.status_code == 200:
-                    print(f"✅ Deleted conversation {conv_id}")
+                    print(f"Deleted conversation {conv_id}")
                 else:
-                    print(f"⚠️  Failed to delete conversation {conv_id}")
+                    print(f"Failed to delete conversation {conv_id}")
             except Exception as e:
-                print(f"⚠️  Error deleting conversation {conv_id}: {e}")
+                print(f"Error deleting conversation {conv_id}: {e}")
 
 async def main():
     """Run all bot locking tests"""
-    print("🚀 PyPoe Bot Locking Test Suite")
+    print("PyPoe Bot Locking Test Suite")
     print("=" * 50)
     
     tester = BotLockingTester()
@@ -233,17 +233,17 @@ async def main():
         test_conversations.append(new_conv_result["conversation_id"])
     
     # Print results
-    print("\n📊 Test Results:")
+    print("\nTest Results:")
     print("=" * 50)
-    print(f"REST API Bot Locking: {'✅ PASS' if rest_result['status'] == 'pass' else '❌ FAIL'}")
+    print(f"REST API Bot Locking: {'PASS' if rest_result['status'] == 'pass' else 'FAIL'}")
     if rest_result["status"] == "fail":
         print(f"   Error: {rest_result.get('error')}")
     
-    print(f"WebSocket Bot Locking: {'✅ PASS' if ws_result['status'] == 'pass' else '❌ FAIL'}")
+    print(f"WebSocket Bot Locking: {'PASS' if ws_result['status'] == 'pass' else 'FAIL'}")
     if ws_result["status"] == "fail":
         print(f"   Error: {ws_result.get('error')}")
     
-    print(f"New Conversation Bot Selection: {'✅ PASS' if new_conv_result['status'] == 'pass' else '❌ FAIL'}")
+    print(f"New Conversation Bot Selection: {'PASS' if new_conv_result['status'] == 'pass' else 'FAIL'}")
     if new_conv_result["status"] == "fail":
         print(f"   Error: {new_conv_result.get('error')}")
     
@@ -254,13 +254,13 @@ async def main():
     total_tests = 3
     passed_tests = sum(1 for result in [rest_result, ws_result, new_conv_result] if result["status"] == "pass")
     
-    print(f"\n🎯 Test Summary: {passed_tests}/{total_tests} tests passed")
+    print(f"\nTest Summary: {passed_tests}/{total_tests} tests passed")
     
     if passed_tests == total_tests:
-        print("🎉 All tests passed! Bot locking is working correctly.")
+        print("All tests passed! Bot locking is working correctly.")
         return 0
     else:
-        print("⚠️  Some tests failed. Check the PyPoe server logs for details.")
+        print("Some tests failed. Check the PyPoe server logs for details.")
         return 1
 
 if __name__ == "__main__":
@@ -268,8 +268,8 @@ if __name__ == "__main__":
         exit_code = asyncio.run(main())
         exit(exit_code)
     except KeyboardInterrupt:
-        print("\n👋 Test cancelled by user")
+        print("\nTest cancelled by user")
         exit(1)
     except Exception as e:
-        print(f"❌ Test suite failed: {e}")
+        print(f"Test suite failed: {e}")
         exit(1) 

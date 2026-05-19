@@ -137,7 +137,7 @@ class WebApp:
             # First try the fallback method (no AI required)
             fallback_topic = self._generate_fallback_topic(first_message)
             if fallback_topic and fallback_topic != "Chat Topic":
-                print(f"✅ Using fallback topic: '{fallback_topic}'")
+                print(f"Using fallback topic: '{fallback_topic}'")
                 return fallback_topic
             
             # If fallback is not good enough, try AI models
@@ -161,7 +161,7 @@ class WebApp:
                             ):
                                 full_response += chunk
                     except asyncio.TimeoutError:
-                        print(f"⚠️  Topic generation timed out for {model}")
+                        print(f"Topic generation timed out for {model}")
                         continue
                     
                     # Clean up the response - remove quotes, extra punctuation
@@ -173,15 +173,15 @@ class WebApp:
                         topic = ' '.join(words[:5])
                     
                     if topic and topic.lower() not in ['error', 'failed', 'sorry', 'cannot']:
-                        print(f"✅ Generated topic using {model}: '{topic}'")
+                        print(f"Generated topic using {model}: '{topic}'")
                         return topic
                         
                 except Exception as model_error:
-                    print(f"⚠️  Failed to generate topic with {model}: {model_error}")
+                    print(f"Failed to generate topic with {model}: {model_error}")
                     continue
             
             # If all models fail, use fallback
-            print("⚠️  All models failed for topic generation, using fallback")
+            print("All models failed for topic generation, using fallback")
             return self._generate_fallback_topic(first_message)
             
         except Exception as e:
@@ -220,12 +220,12 @@ class WebApp:
     async def _generate_and_save_topic(self, conversation_id: str, user_message: str):
         """Generate and save topic in background without blocking the WebSocket."""
         try:
-            print(f"🔄 Starting topic generation for conversation {conversation_id}")
-            print(f"📝 First message: '{user_message[:100]}...'")
+            print(f"Starting topic generation for conversation {conversation_id}")
+            print(f"First message: '{user_message[:100]}...'")
             
             topic = await self._generate_topic_from_message(user_message)
             
-            print(f"🎯 Generated topic: '{topic}'")
+            print(f"Generated topic: '{topic}'")
             
             # Update the conversation with the generated topic
             import aiosqlite
@@ -237,7 +237,7 @@ class WebApp:
                     )
                     await db.commit()
             
-            print(f"✅ Successfully saved topic '{topic}' for conversation {conversation_id}")
+            print(f"Successfully saved topic '{topic}' for conversation {conversation_id}")
             
             # Notify connected clients about the topic update
             try:
@@ -249,12 +249,12 @@ class WebApp:
                             "topic": topic
                         }))
                     except Exception as notify_error:
-                        print(f"⚠️  Failed to notify client about topic update: {notify_error}")
+                        print(f"Failed to notify client about topic update: {notify_error}")
             except Exception as notify_error:
-                print(f"⚠️  Failed to notify clients about topic update: {notify_error}")
+                print(f"Failed to notify clients about topic update: {notify_error}")
             
         except Exception as e:
-            print(f"⚠️  Failed to generate and save topic: {e}")
+            print(f"Failed to generate and save topic: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1783,7 +1783,7 @@ class WebApp:
                                     import asyncio
                                     asyncio.create_task(self._generate_and_save_topic(conversation_id, user_message))
                     except Exception as e:
-                        print(f"⚠️  Failed to start topic generation: {e}")
+                        print(f"Failed to start topic generation: {e}")
                     
             except WebSocketDisconnect:
                 self.active_connections.remove(websocket)
@@ -1840,7 +1840,7 @@ def run_server(host: str = "localhost", port: int = 8000, config: Config = None)
     import asyncio
     
     def signal_handler(sig, frame):
-        print(f"\n👋 Received signal {sig}, shutting down gracefully...")
+        print(f"\nReceived signal {sig}, shutting down gracefully...")
     
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -1849,7 +1849,7 @@ def run_server(host: str = "localhost", port: int = 8000, config: Config = None)
     try:
         uvicorn.run(**uvicorn_config)
     except KeyboardInterrupt:
-        print("\n👋 Server shutdown complete")
+        print("\nServer shutdown complete")
     except Exception as e:
-        print(f"❌ Server error: {e}")
+        print(f"Server error: {e}")
         raise 

@@ -59,11 +59,11 @@ class PyPoeCLI:
             conversations = await client.get_conversations()
             
             if not conversations:
-                print("📭 No conversations found.")
-                print("💡 Use 'pypoe-cli chat' to start a new conversation.")
+                print("No conversations found.")
+                print("Use 'pypoe-cli chat' to start a new conversation.")
                 return
             
-            print(f"📚 Found {len(conversations)} conversation(s):")
+            print(f"Found {len(conversations)} conversation(s):")
             print("=" * 80)
             
             for i, conv in enumerate(conversations, 1):
@@ -75,12 +75,12 @@ class PyPoeCLI:
                 msg_count = conv.get('message_count', 0)
                 
                 # Basic info
-                print(f"{i:2d}. 📝 {title}")
-                print(f"    🆔 ID: {conv_id}")
-                print(f"    🏷️  Topic: {topic}")
-                print(f"    🤖 Bot: {bot_name}")
-                print(f"    📅 Created: {created_at}")
-                print(f"    💬 Messages: {msg_count}")
+                print(f"{i:2d}. {title}")
+                print(f"    ID: {conv_id}")
+                print(f"    Topic: {topic}")
+                print(f"    Bot: {bot_name}")
+                print(f"    Created: {created_at}")
+                print(f"    Messages: {msg_count}")
                 
                 if show_details:
                     # Get latest message preview
@@ -89,10 +89,10 @@ class PyPoeCLI:
                         if messages:
                             last_msg = messages[-1]
                             preview = self._truncate_text(last_msg['content'])
-                            role_icon = "👤" if last_msg['role'] == 'user' else "🤖"
-                            print(f"    💭 Last: {role_icon} {preview}")
+                            role_icon = "" if last_msg['role'] == 'user' else ""
+                            print(f"    Last: {role_icon} {preview}")
                     except Exception as e:
-                        print(f"    ⚠️  Error loading messages: {e}")
+                        print(f"    Error loading messages: {e}")
                 
                 print()
                 
@@ -109,33 +109,33 @@ class PyPoeCLI:
             conversation = next((c for c in conversations if c['id'] == conv_id), None)
             
             if not conversation:
-                print(f"❌ Conversation with ID '{conv_id}' not found.")
-                print("💡 Use 'pypoe-cli list' to see available conversations.")
+                print(f"Conversation with ID '{conv_id}' not found.")
+                print("Use 'pypoe-cli list' to see available conversations.")
                 return
             
             # Display conversation metadata
             print("=" * 80)
-            print(f"📝 Title: {conversation.get('title', 'No title')}")
-            print(f"🏷️ Topic: {conversation.get('topic', 'No topic')}")
-            print(f"🤖 Bot: {conversation.get('bot_name', 'Unknown')}")
-            print(f"🔄 Mode: {conversation.get('chat_mode', 'chatbot')}")
-            print(f"📅 Created: {self._format_timestamp(conversation.get('created_at', ''))}")
-            print(f"🆔 ID: {conv_id}")
+            print(f"Title: {conversation.get('title', 'No title')}")
+            print(f"Topic: {conversation.get('topic', 'No topic')}")
+            print(f"Bot: {conversation.get('bot_name', 'Unknown')}")
+            print(f"Mode: {conversation.get('chat_mode', 'chatbot')}")
+            print(f"Created: {self._format_timestamp(conversation.get('created_at', ''))}")
+            print(f"ID: {conv_id}")
             print("=" * 80)
             
             # Get and display messages
             messages = await client.get_conversation_messages(conv_id)
             
             if not messages:
-                print("💬 No messages in this conversation.")
-                print("💡 Use 'pypoe-cli chat --conv-id' to start chatting.")
+                print("No messages in this conversation.")
+                print("Use 'pypoe-cli chat --conv-id' to start chatting.")
                 return
             
-            print(f"💬 Conversation History ({len(messages)} messages):")
+            print(f"Conversation History ({len(messages)} messages):")
             print("-" * 80)
             
             for i, msg in enumerate(messages, 1):
-                role_icon = "👤" if msg['role'] == 'user' else "🤖"
+                role_icon = "" if msg['role'] == 'user' else ""
                 role_name = "You" if msg['role'] == 'user' else msg.get('bot_name', 'Assistant')
                 timestamp = self._format_timestamp(msg.get('timestamp', ''))
                 
@@ -165,7 +165,7 @@ class PyPoeCLI:
                 conversation = next((c for c in conversations if c['id'] == conv_id), None)
 
                 if not conversation:
-                    print(f"❌ Conversation with ID '{conv_id}' not found.")
+                    print(f"Conversation with ID '{conv_id}' not found.")
                     return
 
                 bot_name = conversation.get('bot_name', bot_name)
@@ -173,10 +173,10 @@ class PyPoeCLI:
                 conv_title = conversation.get('title', 'Untitled')
 
                 print("=" * 60)
-                print(f"💬 Continuing chat: {conv_title}")
-                print(f"🏷️ Topic: {topic}")
-                print(f"🤖 Bot: {bot_name}")
-                print(f"🆔 ID: {conv_id}")
+                print(f"Continuing chat: {conv_title}")
+                print(f"Topic: {topic}")
+                print(f"Bot: {bot_name}")
+                print(f"ID: {conv_id}")
                 print("=" * 60)
 
             else:
@@ -192,9 +192,9 @@ class PyPoeCLI:
                 )
                 
                 print("=" * 60)
-                print(f"💬 New chat started: {title}")
-                print(f"🤖 Bot: {bot_name}")
-                print(f"🆔 ID: {conv_id}")
+                print(f"New chat started: {title}")
+                print(f"Bot: {bot_name}")
+                print(f"ID: {conv_id}")
                 print("=" * 60)
             
             print("Type your message and press Enter. Type 'quit', 'exit', or 'q' to end the chat.")
@@ -206,17 +206,17 @@ class PyPoeCLI:
             while True:
                 try:
                     # Get user input
-                    message = input("👤 You: ").strip()
+                    message = input("You: ").strip()
                     
                     if message.lower() in ['quit', 'exit', 'q', '/quit', '/exit']:
-                        print("👋 Chat ended!")
+                        print("Chat ended!")
                         break
                     
                     if not message:
                         continue
                     
                     message_count += 1
-                    print(f"🤖 {bot_name}: ", end='', flush=True)
+                    print(f"{bot_name}: ", end='', flush=True)
 
                     # Generate topic from first message of a freshly created conversation
                     if message_count == 1 and is_new_conversation:
@@ -239,14 +239,14 @@ class PyPoeCLI:
                     print()  # Extra spacing
                     
                 except KeyboardInterrupt:
-                    print("\n👋 Chat ended!")
+                    print("\nChat ended!")
                     break
                 except EOFError:
-                    print("\n👋 Chat ended!")
+                    print("\nChat ended!")
                     break
                 except Exception as e:
-                    print(f"\n❌ Error: {e}")
-                    print("💡 Try again or type 'quit' to exit.")
+                    print(f"\nError: {e}")
+                    print("Try again or type 'quit' to exit.")
                     
         finally:
             await self._close_client()
@@ -261,7 +261,7 @@ class PyPoeCLI:
             conversation = next((c for c in conversations if c['id'] == conv_id), None)
             
             if not conversation:
-                print(f"❌ Conversation with ID '{conv_id}' not found.")
+                print(f"Conversation with ID '{conv_id}' not found.")
                 return
             
             title = conversation.get('title', 'Untitled')
@@ -269,17 +269,17 @@ class PyPoeCLI:
             
             # Confirm deletion
             if not confirm:
-                print(f"🗑️  Delete conversation: {title}")
-                print(f"🏷️ Topic: {topic}")
-                print(f"🆔 ID: {conv_id}")
-                response = input("⚠️  Are you sure? Type 'yes' to confirm: ").strip().lower()
+                print(f"Delete conversation: {title}")
+                print(f"Topic: {topic}")
+                print(f"ID: {conv_id}")
+                response = input("Are you sure? Type 'yes' to confirm: ").strip().lower()
                 if response != 'yes':
-                    print("❌ Deletion cancelled.")
+                    print("Deletion cancelled.")
                     return
             
             # Delete conversation
             await client.delete_conversation(conv_id)
-            print(f"✅ Conversation '{title}' deleted successfully.")
+            print(f"Conversation '{title}' deleted successfully.")
             
         finally:
             await self._close_client()
@@ -292,12 +292,12 @@ class PyPoeCLI:
             conversations = await client.get_conversations()
             
             if not conversations:
-                print("📭 No conversations found.")
-                print("💡 Use 'pypoe-cli chat' to start a new conversation.")
+                print("No conversations found.")
+                print("Use 'pypoe-cli chat' to start a new conversation.")
                 return
             
             while True:
-                print("\n📚 Select a conversation:")
+                print("\nSelect a conversation:")
                 print("=" * 60)
                 
                 # Display conversations with numbers
@@ -308,9 +308,9 @@ class PyPoeCLI:
                     msg_count = conv.get('message_count', 0)
                     created = self._format_timestamp(conv.get('created_at', ''))
                     
-                    print(f"{i:2d}. 📝 {self._truncate_text(title, 35)}")
-                    print(f"    🏷️ {topic} | 🤖 {bot} | 💬 {msg_count} msgs")
-                    print(f"    📅 {created} | 🆔 {conv['id'][:8]}...")
+                    print(f"{i:2d}. {self._truncate_text(title, 35)}")
+                    print(f"    {topic} | {bot} | {msg_count} msgs")
+                    print(f"    {created} | {conv['id'][:8]}...")
                     print()
                 
                 print("Commands:")
@@ -322,7 +322,7 @@ class PyPoeCLI:
                     choice = input(f"\nEnter choice (1-{len(conversations)}, c1-c{len(conversations)}, or q): ").strip()
                     
                     if choice.lower() == 'q':
-                        print("👋 Goodbye!")
+                        print("Goodbye!")
                         break
                     
                     # Handle chat command (c1, c2, etc.)
@@ -331,15 +331,15 @@ class PyPoeCLI:
                             choice_num = int(choice[1:])
                             if 1 <= choice_num <= len(conversations):
                                 selected_conv = conversations[choice_num - 1]
-                                print(f"\n🚀 Starting chat with: {selected_conv.get('title', 'Untitled')}")
+                                print(f"\nStarting chat with: {selected_conv.get('title', 'Untitled')}")
                                 await self.start_chat(conv_id=selected_conv['id'])
                                 # Refresh conversations list after chatting
                                 conversations = await client.get_conversations()
                                 continue
                             else:
-                                print(f"❌ Please enter c1 to c{len(conversations)}")
+                                print(f"Please enter c1 to c{len(conversations)}")
                         except ValueError:
-                            print("❌ Invalid format. Use c1, c2, etc.")
+                            print("Invalid format. Use c1, c2, etc.")
                         continue
                     
                     # Handle view command (just number)
@@ -360,16 +360,16 @@ class PyPoeCLI:
                                 await self.start_chat(conv_id=selected_conv['id'])
                                 conversations = await client.get_conversations()
                             elif next_action == 'q':
-                                print("👋 Goodbye!")
+                                print("Goodbye!")
                                 break
                             # 'b' or anything else goes back to list
                         else:
-                            print(f"❌ Please enter a number between 1 and {len(conversations)}")
+                            print(f"Please enter a number between 1 and {len(conversations)}")
                     except ValueError:
-                        print("❌ Please enter a valid number, c[number], or 'q'")
+                        print("Please enter a valid number, c[number], or 'q'")
                         
                 except KeyboardInterrupt:
-                    print("\n👋 Goodbye!")
+                    print("\nGoodbye!")
                     break
                     
         finally:
@@ -450,9 +450,9 @@ async def main():
             await cli.delete_conversation(args.conv_id, confirm=args.yes)
             
     except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+        print("\nGoodbye!")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         sys.exit(1)
 
 

@@ -102,8 +102,8 @@ def run_web_interface(host: str = '127.0.0.1', port: int = 8000):
         # Note: run_web_server is synchronous, not async
         run_web_server(host=host, port=port, config=config)
     except ImportError as e:
-        print(f"❌ Web interface not available: {e}")
-        print("💡 Install web dependencies: pip install -e '.[web-ui]'")
+        print(f"Web interface not available: {e}")
+        print("Install web dependencies: pip install -e '.[web-ui]'")
         sys.exit(1)
 
 async def run_cli_interface(args):
@@ -120,7 +120,7 @@ async def run_cli_interface(args):
 
         await cli_main()
     except ImportError as e:
-        print(f"❌ CLI interface not available: {e}")
+        print(f"CLI interface not available: {e}")
         sys.exit(1)
 
 async def run_slack_interface():
@@ -129,8 +129,8 @@ async def run_slack_interface():
         from ..interfaces.slack.bot import main as slack_main
         await slack_main()
     except ImportError as e:
-        print(f"❌ Slack interface not available: {e}")
-        print("💡 Install Slack dependencies: pip install -e '.[web-ui]'")
+        print(f"Slack interface not available: {e}")
+        print("Install Slack dependencies: pip install -e '.[web-ui]'")
         sys.exit(1)
 
 def run_lab_mcp(base_url=None):
@@ -138,8 +138,8 @@ def run_lab_mcp(base_url=None):
     try:
         from ..lab.mcp_server import main as mcp_main
     except ImportError as e:
-        print(f"❌ Lab MCP not available: {e}")
-        print("💡 Install lab dependencies: pip install -e '.[lab]'")
+        print(f"Lab MCP not available: {e}")
+        print("Install lab dependencies: pip install -e '.[lab]'")
         sys.exit(1)
     if base_url:
         import os
@@ -151,25 +151,25 @@ async def run_lab_status(base_url=None):
     try:
         from ..lab.http_client import LabClient
     except ImportError as e:
-        print(f"❌ Lab integration not available: {e}")
-        print("💡 Install lab dependencies: pip install -e '.[lab]'")
+        print(f"Lab integration not available: {e}")
+        print("Install lab dependencies: pip install -e '.[lab]'")
         sys.exit(1)
 
     async with LabClient(base_url=base_url) as client:
         try:
             health = await client.health()
         except Exception as exc:
-            print(f"❌ Aggregator unreachable at {client.base_url}: {exc}")
+            print(f"Aggregator unreachable at {client.base_url}: {exc}")
             sys.exit(2)
 
         version = health.get("version", "?")
         count = health.get("equipment_count", "?")
-        print(f"✓ Aggregator healthy — version {version}, {count} device(s) registered")
+        print(f"Aggregator healthy — version {version}, {count} device(s) registered")
 
         try:
             data = await client.list_equipment()
         except Exception as exc:
-            print(f"⚠ Could not list equipment: {exc}")
+            print(f"Could not list equipment: {exc}")
             return
 
         equipment = data.get("equipment", [])
@@ -223,9 +223,9 @@ def main():
             parser.print_help()
             
     except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+        print("\nGoodbye!")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         sys.exit(1)
 
 def run():

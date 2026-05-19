@@ -82,17 +82,17 @@ async def main():
         
         # Clean up
         await client.close()
-        print("\n✅ Example completed successfully!")
+        print("\nExample completed successfully!")
         
     except ValueError as e:
-        print(f"\n❌ Configuration Error: {e}")
+        print(f"\nConfiguration Error: {e}")
         print("\nTo fix this:")
         print("1. Run: python user_scripts/setup_credentials.py")
         print("2. Or manually create a .env file with your POE_API_KEY")
         print("3. Get your API key from: https://poe.com/api_key")
 
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         print("\nTroubleshooting:")
         print("1. Make sure you have a Poe subscription")
         print("2. Verify your API key is correct")

@@ -158,9 +158,9 @@ class HistoryManager:
         async def _add_column(sql: str, label: str):
             try:
                 await db.execute(sql)
-                print(f"✅ {label}")
+                print(f"{label}")
             except Exception as exc:
-                print(f"⚠️  Skipping {label}: {exc}")
+                print(f"Skipping {label}: {exc}")
 
         try:
             conv_cols = await _column_names("conversations")
@@ -200,10 +200,10 @@ class HistoryManager:
                     "Added media_data column to messages table",
                 )
 
-            print("🔄 Database migration to enhanced schema completed")
+            print("Database migration to enhanced schema completed")
 
         except Exception as e:
-            print(f"⚠️  Database migration warning: {e}")
+            print(f"Database migration warning: {e}")
             # Continue anyway - the tables should still work for basic functionality
 
     def _detect_media_content(self, content: str, bot_name: str) -> Dict[str, Any]:
@@ -567,7 +567,7 @@ class HistoryManager:
                 
                 # Log cleanup results
                 if deleted_files > 0:
-                    print(f"🧹 Cleaned up {deleted_files} media files for conversation {conversation_id}")
+                    print(f"Cleaned up {deleted_files} media files for conversation {conversation_id}")
 
     async def cleanup_orphaned_media(self):
         """Remove media files that are no longer referenced."""
@@ -603,7 +603,7 @@ class HistoryManager:
                 await db.commit()
                 
                 if deleted_count > 0:
-                    print(f"🧹 Cleaned up {deleted_count} orphaned media files")
+                    print(f"Cleaned up {deleted_count} orphaned media files")
 
     async def get_media_stats(self) -> Dict[str, Any]:
         """Get statistics about media storage."""

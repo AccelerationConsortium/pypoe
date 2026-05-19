@@ -36,12 +36,12 @@ def setup_credentials():
     api_key = input("Enter your Poe API key: ").strip()
     
     if not api_key:
-        print("❌ No API key provided. Setup cancelled.")
+        print("No API key provided. Setup cancelled.")
         return
     
     # Validate API key format (basic check)
     if not api_key.startswith('sk-') or len(api_key) < 20:
-        print("⚠️  Warning: This doesn't look like a valid Poe API key.")
+        print("Warning: This doesn't look like a valid Poe API key.")
         print("   Poe API keys typically start with 'sk-' and are longer.")
         response = input("Continue anyway? (y/N): ").strip().lower()
         if response not in ['y', 'yes']:
@@ -65,7 +65,7 @@ POE_API_KEY={api_key}
         with open(env_path, 'w') as f:
             f.write(env_content)
         
-        print(f"✅ Credentials saved to: {env_path}")
+        print(f"Credentials saved to: {env_path}")
         print()
         print("Setup complete! You can now use PyPoe:")
         print("1. Try the basic example: python examples/basic_usage.py")
@@ -73,7 +73,7 @@ POE_API_KEY={api_key}
         print("3. Import in your code: from pypoe import PoeChatClient")
 
     except Exception as e:
-        print(f"❌ Error saving credentials: {e}")
+        print(f"Error saving credentials: {e}")
         print("You can manually create a .env file with:")
         print(f"POE_API_KEY={api_key}")
 
