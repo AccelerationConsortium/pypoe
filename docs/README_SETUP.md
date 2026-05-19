@@ -27,6 +27,7 @@ cd pypoe
 | `pip install -e .` | Core SDK + CLI |
 | `pip install -e ".[web-ui]"` | + web UI and Slack bot (`fastapi`, `slack-bolt`, etc.) |
 | `pip install -e ".[media]"` | + image/video auto-download deps (`aiohttp`); also set `PYPOE_ENABLE_MEDIA=true` |
+| `pip install -e ".[lab]"` | + AC Organic Self-driving Lab integration: read-only MCP server, `/lab-*` Slack commands, Kuma alert webhook, `pypoe lab-status` / `lab-mcp` CLI. See [LAB_INTEGRATION.md](LAB_INTEGRATION.md). |
 | `pip install -e ".[dev]"` | Everything + `pytest`, `black`, `isort`, `flake8`, `mypy` |
 
 There is no `[all]` extra; `[dev]` is the closest analogue.
@@ -101,6 +102,14 @@ Optional helper scripts in `scripts/setup/`:
 - `setup_credentials.py` — interactive `.env` creation.
 - `setup_webui.py` — guided web UI configuration.
 - `setup_tailscale.py` — bind the web UI to your Tailscale IP.
+- `install_system_services.sh` — install hardened system-level
+  systemd units under a dedicated `pypoe` user. Ignore if you're
+  using the user-level units in [README_SYSTEMD.md](README_SYSTEMD.md).
+
+Plus one in `scripts/utils/`:
+
+- `update_models.py` — interactive Poe model availability checker.
+  Edit `src/pypoe/config/models.yaml` based on what reports as live.
 
 ## Troubleshooting
 

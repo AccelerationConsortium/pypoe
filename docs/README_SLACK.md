@@ -224,6 +224,21 @@ This deletes only:
 
 Web/CLI history is not touched.
 
+## Optional: `/lab-*` commands for the AC Organic Self-driving Lab
+
+If you've installed PyPoe with `pip install -e ".[lab]"` and set
+`LAB_API_URL` (or `PYPOE_ENABLE_LAB=1`) in `.env`, `pypoe slack`
+auto-registers a second set of read-only slash commands that query
+the lab dashboard's aggregator: `/lab-status`, `/lab-device`,
+`/lab-runs`, `/lab-sensors`, `/lab-actions`. These are namespaced via
+`LAB_SLACK_COMMAND_PREFIX` (default `/lab-`); set it to
+`/sdl2-lab-` (or similar) when multiple labs share one Slack workspace.
+
+You still need to declare each command in the Slack app admin UI
+before Slack will forward it to the bot. See
+[docs/LAB_INTEGRATION.md](LAB_INTEGRATION.md) for the full list and
+the per-command argument hints.
+
 ## Troubleshooting
 
 ```bash

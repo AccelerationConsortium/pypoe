@@ -109,6 +109,9 @@ pypoe/
   src/pypoe/
     core/          # client, history, config, cli entry point
     interfaces/    # web/, slack/, cli/
+    lab/           # optional ac-organic-lab integration (read-only MCP,
+                   #   /lab-* Slack commands, /alerts/kuma webhook)
+    config/        # slack.yaml + models.yaml (lab + model catalog)
     tests/
   scripts/         # ops + setup helpers
   docs/            # topic-specific documentation

@@ -138,3 +138,15 @@ guarantee. To use a different bot, start a new conversation.
 | Web UI shows zero conversations but Slack does | Different `DATABASE_PATH` between the two processes; confirm both load the same `.env`. |
 
 For background-service operation see [README_SYSTEMD.md](README_SYSTEMD.md).
+
+## Optional: `/alerts/kuma` webhook for the AC Organic Self-driving Lab
+
+If you install with `pip install -e ".[lab]"` AND set `LAB_API_URL`
+(or `PYPOE_ENABLE_LAB=1`) in `.env`, the web app additionally mounts
+a read-only `POST /alerts/kuma` route. Uptime Kuma posts its default
+JSON payload there; on `DOWN` alerts PyPoe spawns a background
+`claude -p` investigation, posts the synthesised summary into a
+Slack thread, and journals findings via the lab MCP. On `RECOVERY`
+it just posts a green-tick line. See
+[LAB_INTEGRATION.md](LAB_INTEGRATION.md) for full setup; nothing else
+in this doc is affected by enabling the lab extra.

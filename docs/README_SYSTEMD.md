@@ -20,10 +20,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/<you>/PyPoe
-Environment=PYTHONPATH=/home/<you>/PyPoe/src
+WorkingDirectory=/home/<you>/pypoe
+Environment=PYTHONPATH=/home/<you>/pypoe/src
 Environment=PATH=/home/<you>/pyenv/bin:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=/home/<you>/PyPoe/.env
+EnvironmentFile=/home/<you>/pypoe/.env
 ExecStart=/bin/bash -lc 'exec /home/<you>/pyenv/bin/pypoe web --host "$(/usr/bin/tailscale ip -4)" --port "${PYPOE_PORT:-8000}"'
 Restart=on-failure
 RestartSec=5
@@ -42,10 +42,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/<you>/PyPoe
-Environment=PYTHONPATH=/home/<you>/PyPoe/src
+WorkingDirectory=/home/<you>/pypoe
+Environment=PYTHONPATH=/home/<you>/pypoe/src
 Environment=PATH=/home/<you>/pyenv/bin:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=/home/<you>/PyPoe/.env
+EnvironmentFile=/home/<you>/pypoe/.env
 ExecStart=/home/<you>/pyenv/bin/pypoe slack
 Restart=on-failure
 RestartSec=5
@@ -54,7 +54,7 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-Replace `/home/<you>/PyPoe` with your clone path and `/home/<you>/pyenv`
+Replace `/home/<you>/pypoe` with your clone path and `/home/<you>/pyenv`
 with the Python environment that has PyPoe installed (`pip install -e ".[web-ui]"`).
 The web unit binds to the Tailscale IP; if you don't use Tailscale,
 change `ExecStart` to bind `127.0.0.1` or `0.0.0.0` (with auth — see

@@ -35,7 +35,7 @@ Browser ──► Next.js (web/) ──► FastAPI aggregator (:8001) ──► 
                                                │
    Uptime Kuma ──── /alerts/kuma ──► claude -p ─┘
                                        │
-                                       ├─► consult_poe (Poe via PyPoe CLI)
+                                       ├─► consult_poe (PoeChatClient → Poe API)
                                        └─► ask_human  (Slack thread reply)
 ```
 
@@ -48,8 +48,8 @@ the **single source of truth**. PyPoe never caches lab state.
 pip install -e ".[lab]"
 ```
 
-This adds three runtime deps to PyPoe: `mcp`, `httpx`, and
-`slack-sdk`. Combine with the existing extras as needed:
+This adds four runtime deps to PyPoe: `mcp`, `httpx`, `slack-sdk`,
+`pyyaml`. Combine with the existing extras as needed:
 
 ```bash
 pip install -e ".[web-ui,lab]"   # also runs pypoe web + slack bot
@@ -58,20 +58,25 @@ pip install -e ".[dev]"          # everything, including [lab]
 
 ## Configure
 
-Two files cooperate:
+Three files cooperate, all under **`src/pypoe/config/`**:
 
-- **`slack.yaml`** at PyPoe project root holds the lab-side knobs
-  (aggregator URL, slash-command prefix, alert channel, etc.). This
-  file is *gitignored* and site-specific; a template
-  (`slack.example.yaml`) is committed for you to copy.
-- **`.env`** keeps **secrets only** — `SLACK_BOT_TOKEN`,
-  `SLACK_SIGNING_SECRET`, `POE_API_KEY`. Nothing in `.env` controls
-  lab behaviour; that all moved to `slack.yaml`.
+- **`slack.yaml`** holds the lab-side knobs (aggregator URL,
+  slash-command prefix, alert channel, consult model list, …).
+  *Gitignored*. Copy `slack.example.yaml` next to it as a starting
+  point.
+- **`models.yaml`** is the Poe model catalog used by every PyPoe
+  interface (CLI/web/slack/lab). *Gitignored*. Copy
+  `models.example.yaml` next to it. The `consult.models` entries in
+  `slack.yaml` MUST exist in this file's `chat_models` list.
+- **`.env`** at the project root keeps **secrets only** —
+  `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `POE_API_KEY`. Nothing in
+  `.env` controls lab behaviour; that all lives in the YAMLs.
 
-Either file is optional. With neither present, the loader falls back
-to the hardcoded defaults in `pypoe.lab.config.LabConfig` and a
-`pypoe lab-mcp` server still starts cleanly against
-`http://localhost:8001`.
+All three files are optional. With none present, both loaders fall
+back to baked-in defaults: an 8-model `CHAT_MODELS` snapshot and the
+defaults inside `pypoe.lab.config.LabConfig`. `pypoe lab-mcp` and
+`pypoe lab-status` start cleanly against `http://localhost:8001` in
+that mode.
 
 ### `slack.yaml` schema
 
@@ -115,6 +120,28 @@ lab:
     command_prefix: /sdl2-lab-
 ```
 
+### `models.yaml` schema
+
+```yaml
+default: Claude-Sonnet-4.6           # used wherever DEFAULT_CHAT_MODEL is needed
+chat_models:                         # the list PyPoe's UIs offer to users
+  - Claude-Opus-4.7
+  - Claude-Sonnet-4.6
+  - GPT-5.5
+  - GPT-5.5-Pro
+  - GPT-4-Turbo
+  - Grok-4
+  - Gemini-3.1-Pro
+  - Gemini-3-Flash
+pricing_usd_per_1m_tokens:           # Poe pricing snapshot; controls
+  Claude-Opus-4.7:    { prompt: 4.2929,  completion: 21.4646  }   # the
+  Claude-Sonnet-4.6:  { prompt: 2.5758,  completion: 12.8788  }   # $-meter
+  # ... (etc — see config/models.example.yaml)
+```
+
+Run `scripts/utils/update_models.py` to test which entries in
+`chat_models` are currently live on Poe before editing the list.
+
 ### Override precedence
 
 Highest wins:
@@ -130,7 +157,9 @@ Highest wins:
 
 `PYPOE_LAB_CONFIG=<path>` overrides the file location entirely;
 when set, the loader looks only at that path (no fallback to the
-project-root file), so tests and one-off configs are easy.
+packaged location), so tests and one-off configs are easy. The
+same pattern applies to `PYPOE_MODELS_CONFIG=<path>` for the model
+catalog.
 
 ### Secrets stay in `.env`
 
@@ -182,7 +211,7 @@ a `control_action`:
 | `recent_runs(limit)` | read | `GET /api/history/runs` |
 | `run_wells(run_id)` | read | `GET /api/history/runs/{id}/wells` |
 | `append_observation(id, summary, severity, extra?)` | write (journaling) | `POST /api/ingest/events` |
-| `consult_poe(model, question, context?)` | other-LLM | shells `pypoe cli chat --bot <model>` |
+| `consult_poe(model, question, context?)` | other-LLM | `pypoe.core.client.PoeChatClient.send_message` (ephemeral; no DB write) |
 | `ask_human(question, channel?, timeout_s)` | human-in-the-loop | Slack thread reply with polling |
 
 `append_observation` is the **only** write path. It posts an
@@ -225,26 +254,42 @@ instant and free.
 
 Once `pypoe web` is running with `LAB_API_URL` set, configure Kuma to
 POST its default JSON payload to `http://<host>:8000/alerts/kuma`.
-On a "down" alert, PyPoe will:
 
-1. Post `:rotating_light: *<monitor>* DOWN — <msg> :mag: Investigating…`
-   to `LAB_SLACK_CHANNEL`, capturing the thread `ts`.
-2. Spawn `claude -p` in the background (bounded by
-   `LAB_ALERT_MAX_CONCURRENT`). The prompt tells Claude to use the
-   `pypoe-lab` MCP server to investigate, optionally `consult_poe` for
-   a second opinion, optionally `ask_human` for judgment calls, and
-   journal each finding via `append_observation`. It is explicitly
-   told it **cannot** perform control actions and to recommend them in
-   plain English instead.
-3. Post Claude's summary as a threaded reply (truncated to ~3000
-   chars).
+**On a DOWN alert** (`heartbeat.status == 0`):
 
-On a "recovery" alert, PyPoe posts a single recovery line and does not
-spawn an investigation.
+1. PyPoe posts `:rotating_light: *<monitor>* DOWN — <msg>
+   :mag: Investigating…` to `LAB_SLACK_CHANNEL` and captures the
+   thread `ts`.
+2. A background task (bounded by `consult.max_concurrent_investigations`)
+   spawns `claude -p` with a prompt that tells Claude to:
+   - call `aggregator_health()` + `list_equipment()` first;
+   - for each non-healthy device, call `get_equipment_status()` +
+     `recent_events()`;
+   - call `consult_poe(model=…)` once per entry in `consult.models`
+     (if `consult.enabled`) for an independent second opinion;
+   - optionally call `ask_human(...)` for judgment calls;
+   - call `append_observation(device_id, ...)` per affected device;
+   - synthesize a Slack reply: headline → per-model bullets with
+     divergences explicit → Claude's own diagnosis → plain-English
+     recovery recommendation (no `/control/*` calls).
+3. The synthesised summary lands as a **threaded reply** under the
+   original `:rotating_light:` post (truncated to ~3000 chars).
 
-The `claude` CLI authenticates with **Claude Team** OAuth (run
-`claude` once on the host), so no Anthropic API key is needed in the
-PyPoe environment.
+**On a RECOVERY alert** (`heartbeat.status == 1`): PyPoe posts a
+single `:white_check_mark: recovered` line. **No investigation, no
+Claude, no Poe.** This keeps the alert loop quiet for normal
+flap recoveries.
+
+**Choosing the Kuma monitor name matters.** The `monitor.name` you
+typed in Kuma is the first signal Claude has for *which device the
+alert is about*. Naming Kuma monitors after the `equipment.yaml` id
+(e.g. `plateloc`, `dose_every_well`, `aggregator`) lets Claude map
+directly without guesswork. Otherwise Claude falls back to scanning
+all non-healthy devices via `list_equipment()`.
+
+**Auth:** the `claude` CLI authenticates with **Claude Team** OAuth
+(run `claude` once on the host), so no Anthropic API key is needed in
+the PyPoe environment. `consult_poe` uses your `POE_API_KEY`.
 
 ### From the command line
 
@@ -258,6 +303,47 @@ pypoe lab-status --base-url http://lab-staging:8001
 # Run the MCP server interactively (Claude Desktop / Code spawns this):
 pypoe lab-mcp
 ```
+
+## What gets stored where
+
+A common question: does the Slack thread / Claude's report / the
+human's reply get persisted anywhere?
+
+| Artifact | Stored where? | Queryable? |
+|---|---|---|
+| `:rotating_light:` alert post, `:white_check_mark:` recovery line, threaded investigation summary | **Slack only** | yes — Slack thread is the audit log |
+| `ask_human(...)` `:question:` post + the human's reply | **Slack only** | yes — same thread |
+| `consult_poe(...)` round-trip with Poe | **Ephemeral** (no DB write) | no |
+| `append_observation(...)` per-device finding | **Aggregator's `lab.db`** (`equipment_events` table) | yes — `GET /api/history/events/{device_id}` + dashboard history sidebar |
+| PyPoe chat conversations (`/poe ...`, web UI, `pypoe cli`) | `~/.pypoe/single_webchat_history.db` | yes — `pypoe cli list` / web UI |
+
+Deliberate design: PyPoe's chat DB is for **Poe conversations**.
+Operational signals (alerts, summaries, second opinions) live in
+Slack where multiple humans can audit. Per-device findings live in
+the aggregator's DB so they render alongside `state_transition`,
+`error`, `startup`, etc. for the same device.
+
+### What does an `agent_observation` row look like?
+
+```json
+{
+  "ts": "2026-05-19T22:32:06.361461Z",
+  "device_id": "plateloc",
+  "event_type": "agent_observation",
+  "from_state": null,
+  "to_state": null,
+  "message": "<one-line summary from Claude>",
+  "payload": {
+    "source": "claude-agent",           // from cfg.mcp.agent_source
+    "severity": "info | warning | error",
+    "<anything Claude passed in extra>": "..."
+  }
+}
+```
+
+Severity and source live in `payload`, not `context`, so the
+aggregator's `message = rec.message or rec.context` collapse leaves
+the message field intact when read back via `recent_events()`.
 
 ## What this is NOT
 
@@ -280,9 +366,11 @@ pypoe lab-mcp
 | `pypoe lab-status` says "Aggregator unreachable" | Aggregator service down or `LAB_API_URL` wrong | `curl $LAB_API_URL/api/health`; check `journalctl -u ac-organic-lab-api` on the dashboard host. |
 | `/lab-*` commands missing in Slack | `LAB_API_URL` / `PYPOE_ENABLE_LAB` unset, or `[lab]` extra not installed | Set env var and reinstall with `pip install -e ".[lab]"`. Restart `pypoe slack`. |
 | `claude` exits 127 in Kuma thread | `claude` CLI not on PATH on the PyPoe host | Install Claude Code locally; run `claude` once to OAuth into Claude Team. |
-| `consult_poe` returns "pypoe CLI not on PATH" | The MCP host runs PyPoe from a different venv | Make sure `pypoe` is on PATH of whatever process Claude Desktop spawns. |
+| `consult_poe` returns `returncode: 2` with "not accessible" | `POE_API_KEY` unset, expired, or the model name isn't in `models.yaml::chat_models` | Set `POE_API_KEY` in `.env`; double-check `consult.models` entries match `chat_models`. |
+| `consult_poe` returns `returncode: 1` | Transient network error or Poe API blip | Investigation continues; Claude notes the failure in the summary. Retry next alert. |
 | `ask_human` immediately times out | `SLACK_BOT_TOKEN` missing or the bot isn't in `LAB_SLACK_CHANNEL` | Invite the bot to the channel, double-check token. |
 | Observations don't appear in the dashboard sidebar | Severity / source ended up in `context` instead of `extra` | This package always uses `extra`. If you wrote a custom MCP tool, port it. |
+| `/sdl2-lab-status` says "did not respond" in Slack | Slack app config doesn't declare that command name | Each `/lab-*` (or `/<prefix>-…`) must be added in the Slack app admin UI before the bot can receive it. Reinstall the app after adding. |
 
 ## Background reading
 
