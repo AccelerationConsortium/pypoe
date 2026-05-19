@@ -8,7 +8,7 @@ fi
 
 PYPOE_USER="${PYPOE_USER:-sdl2}"
 PYPOE_GROUP="${PYPOE_GROUP:-sdl2}"
-PYPOE_REPO="${PYPOE_REPO:-/home/sdl2/caoyang/PyPoe}"
+PYPOE_REPO="${PYPOE_REPO:-/home/sdl2/caoyang/pypoe}"
 PYPOE_BIN="${PYPOE_BIN:-/home/sdl2/pyenv/bin/pypoe}"
 PYPOE_ENV="${PYPOE_ENV:-${PYPOE_REPO}/.env}"
 
