@@ -27,8 +27,6 @@ import asyncio
 import json
 import logging
 import os
-import shlex
-import subprocess
 import time
 from typing import Any, Optional
 
@@ -180,35 +178,58 @@ def build_server(client: Optional[LabClient] = None) -> "FastMCP":
 async def _consult_poe(
     model: str, question: str, context: Optional[str]
 ) -> dict:
-    """Spawn ``pypoe cli chat`` to fetch a response from the given Poe model."""
+    """Ask another Poe model for a second opinion via PoeChatClient.
+
+    Uses ``pypoe.core.client.PoeChatClient`` directly rather than shelling
+    out to ``pypoe cli chat``: no subprocess, no shell-escaping pitfalls,
+    no spurious "CLI Chat …" rows in PyPoe's history DB. The consult is
+    ephemeral by design — passing ``save_history=False`` means nothing
+    persists between calls.
+
+    Return shape matches what the MCP tool surface promises:
+    ``{model, answer, stderr, returncode}`` where ``returncode`` is 0
+    on success and non-zero on Poe-side errors / config problems.
+    """
     prompt = f"{context}\n\n{question}" if context else question
-    cmd = ["pypoe", "cli", "chat"]
-    # PyPoe's CLI interactively prompts for a bot when given chat; if the
-    # subcommand doesn't accept --bot, callers will see the stderr and
-    # can refine. We deliberately don't pre-validate against `pypoe bots`
-    # here because the menu shifts; instead we surface the raw error.
-    cmd += ["--bot", model]
+
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate(input=prompt.encode())
-        return {
-            "model": model,
-            "answer": stdout.decode(errors="replace").strip(),
-            "stderr": stderr.decode(errors="replace").strip(),
-            "returncode": proc.returncode,
-            "command": " ".join(shlex.quote(c) for c in cmd),
-        }
-    except FileNotFoundError:
+        from ..core.client import PoeChatClient
+    except ImportError as exc:  # pragma: no cover - pypoe install broken
         return {
             "model": model,
             "answer": "",
-            "stderr": "pypoe CLI not on PATH",
+            "stderr": f"PoeChatClient unavailable: {exc}",
             "returncode": 127,
+        }
+
+    try:
+        client = PoeChatClient(enable_history=False)
+        chunks: list[str] = []
+        async for chunk in client.send_message(
+            prompt, bot_name=model, save_history=False
+        ):
+            chunks.append(chunk)
+        return {
+            "model": model,
+            "answer": "".join(chunks).strip(),
+            "stderr": "",
+            "returncode": 0,
+        }
+    except ValueError as exc:
+        # PoeChatClient raises ValueError for unknown / inaccessible bots,
+        # missing API key, quota exceeded etc. — these are caller-fixable.
+        return {
+            "model": model,
+            "answer": "",
+            "stderr": str(exc),
+            "returncode": 2,
+        }
+    except Exception as exc:  # pragma: no cover - network / Poe API blip
+        return {
+            "model": model,
+            "answer": "",
+            "stderr": f"{type(exc).__name__}: {exc}",
+            "returncode": 1,
         }
 
 
