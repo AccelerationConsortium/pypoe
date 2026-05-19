@@ -1,0 +1,36 @@
+# PyPoe chat-model catalog (committed template).
+#
+# Copy to `models.yaml` in this same directory and edit when Poe's
+# model menu changes. Loaded by `pypoe.core.models` at import time;
+# `CHAT_MODELS`, `DEFAULT_CHAT_MODEL`, and
+# `MODEL_PRICING_USD_PER_1M_TOKENS` are derived from this file.
+#
+# If `models.yaml` is missing, the loader falls back to the hardcoded
+# values inside `pypoe.core.models` (in step with the snapshot below).
+# Tip: run `scripts/utils/update_models.py` to test which models are
+# currently live on Poe before editing this list.
+#
+# Pricing snapshot from https://models.poecdn.net/models.json (displayed
+# by https://poe.com/api/models). Values are USD per 1M tokens.
+
+default: Claude-Sonnet-4.6
+
+chat_models:
+  - Claude-Opus-4.7
+  - Claude-Sonnet-4.6
+  - GPT-5.5
+  - GPT-5.5-Pro
+  - GPT-4-Turbo
+  - Grok-4
+  - Gemini-3.1-Pro
+  - Gemini-3-Flash
+
+pricing_usd_per_1m_tokens:
+  Claude-Opus-4.7:    { prompt: 4.2929,  completion: 21.4646  }
+  Claude-Sonnet-4.6:  { prompt: 2.5758,  completion: 12.8788  }
+  GPT-5.5:            { prompt: 4.5455,  completion: 27.2727  }
+  GPT-5.5-Pro:        { prompt: 27.2727, completion: 163.6364 }
+  GPT-4-Turbo:        { prompt: 9.0909,  completion: 27.2727  }
+  Grok-4:             { prompt: 3.0303,  completion: 15.1515  }
+  Gemini-3.1-Pro:     { prompt: 2.0202,  completion: 12.1212  }
+  Gemini-3-Flash:     { prompt: 0.4040,  completion: 2.4242   }

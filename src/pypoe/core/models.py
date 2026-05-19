@@ -1,8 +1,31 @@
-"""Chat-only Poe model catalog used by PyPoe interfaces."""
+"""Chat-only Poe model catalog used by PyPoe interfaces.
 
+The list lives in ``src/pypoe/config/models.yaml`` (gitignored; copy
+from ``models.example.yaml`` next to it). This module loads it at
+import time and exposes the same three constants the rest of the
+codebase has always imported:
+
+  * ``CHAT_MODELS``
+  * ``DEFAULT_CHAT_MODEL``
+  * ``MODEL_PRICING_USD_PER_1M_TOKENS``
+
+If the YAML is absent / malformed, the hardcoded fallback below is
+used so existing deployments keep working without action.
+
+Override the file location with ``PYPOE_MODELS_CONFIG=<path>``.
+"""
+
+import logging
 import math
+import os
+from pathlib import Path
 
-CHAT_MODELS = [
+logger = logging.getLogger(__name__)
+
+
+_FALLBACK_DEFAULT = "Claude-Sonnet-4.6"
+
+_FALLBACK_CHAT_MODELS = [
     "Claude-Opus-4.7",
     "Claude-Sonnet-4.6",
     "GPT-5.5",
@@ -13,20 +36,58 @@ CHAT_MODELS = [
     "Gemini-3-Flash",
 ]
 
-DEFAULT_CHAT_MODEL = "Claude-Sonnet-4.6"
-
-# Static snapshot from https://models.poecdn.net/models.json, displayed by
-# https://poe.com/api/models. Values are USD per 1M tokens.
-MODEL_PRICING_USD_PER_1M_TOKENS = {
-    "Claude-Opus-4.7": {"prompt": 4.2929, "completion": 21.4646},
-    "Claude-Sonnet-4.6": {"prompt": 2.5758, "completion": 12.8788},
-    "GPT-5.5": {"prompt": 4.5455, "completion": 27.2727},
-    "GPT-5.5-Pro": {"prompt": 27.2727, "completion": 163.6364},
-    "GPT-4-Turbo": {"prompt": 9.0909, "completion": 27.2727},
-    "Grok-4": {"prompt": 3.0303, "completion": 15.1515},
-    "Gemini-3.1-Pro": {"prompt": 2.0202, "completion": 12.1212},
-    "Gemini-3-Flash": {"prompt": 0.4040, "completion": 2.4242},
+_FALLBACK_PRICING = {
+    "Claude-Opus-4.7":    {"prompt": 4.2929,  "completion": 21.4646},
+    "Claude-Sonnet-4.6":  {"prompt": 2.5758,  "completion": 12.8788},
+    "GPT-5.5":            {"prompt": 4.5455,  "completion": 27.2727},
+    "GPT-5.5-Pro":        {"prompt": 27.2727, "completion": 163.6364},
+    "GPT-4-Turbo":        {"prompt": 9.0909,  "completion": 27.2727},
+    "Grok-4":             {"prompt": 3.0303,  "completion": 15.1515},
+    "Gemini-3.1-Pro":     {"prompt": 2.0202,  "completion": 12.1212},
+    "Gemini-3-Flash":     {"prompt": 0.4040,  "completion": 2.4242},
 }
+
+
+def _config_path() -> Path:
+    """``src/pypoe/config/models.yaml`` (sibling of ``core/``)."""
+    custom = os.environ.get("PYPOE_MODELS_CONFIG")
+    if custom:
+        return Path(custom).expanduser().resolve()
+    return Path(__file__).resolve().parent.parent / "config" / "models.yaml"
+
+
+def _load() -> tuple[list[str], str, dict]:
+    """Read models.yaml; on any failure fall back to the hardcoded values."""
+    path = _config_path()
+    if not path.is_file():
+        return _FALLBACK_CHAT_MODELS, _FALLBACK_DEFAULT, _FALLBACK_PRICING
+
+    try:
+        import yaml  # PyYAML is a transitive dep of pypoe[web-ui]/[lab]
+    except ImportError:
+        logger.debug("PyYAML not available; using hardcoded model list")
+        return _FALLBACK_CHAT_MODELS, _FALLBACK_DEFAULT, _FALLBACK_PRICING
+
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception as exc:
+        logger.warning("Could not parse %s (%s) — using hardcoded model list", path, exc)
+        return _FALLBACK_CHAT_MODELS, _FALLBACK_DEFAULT, _FALLBACK_PRICING
+
+    chat_models = data.get("chat_models")
+    if not isinstance(chat_models, list) or not all(isinstance(m, str) for m in chat_models):
+        chat_models = _FALLBACK_CHAT_MODELS
+
+    default = data.get("default") if isinstance(data.get("default"), str) else _FALLBACK_DEFAULT
+    pricing = data.get("pricing_usd_per_1m_tokens")
+    if not isinstance(pricing, dict):
+        pricing = _FALLBACK_PRICING
+
+    return list(chat_models), default, pricing
+
+
+CHAT_MODELS, DEFAULT_CHAT_MODEL, MODEL_PRICING_USD_PER_1M_TOKENS = _load()
 
 
 def dollar_meter(rate_per_1m_tokens: float) -> str:
