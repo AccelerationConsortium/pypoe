@@ -57,6 +57,20 @@ class McpSection:
 
 
 @dataclass(frozen=True)
+class ConsultSection:
+    """Which Poe models the alert handler asks for a second opinion.
+
+    When ``enabled`` is True (default), the investigation prompt
+    *requires* Claude to call ``consult_poe`` for each listed model
+    and synthesise their responses into the Slack summary. When False
+    (or ``models`` is empty), Claude investigates solo.
+    """
+
+    enabled: bool = True
+    models: tuple[str, ...] = ("GPT-5.5", "Claude-Opus-4.7")
+
+
+@dataclass(frozen=True)
 class LabConfig:
     """Effective config used by every ``pypoe.lab.*`` module."""
 
@@ -64,6 +78,7 @@ class LabConfig:
     slack: SlackSection = field(default_factory=SlackSection)
     alerts: AlertsSection = field(default_factory=AlertsSection)
     mcp: McpSection = field(default_factory=McpSection)
+    consult: ConsultSection = field(default_factory=ConsultSection)
 
     # Where the YAML actually came from (None if no file was found).
     source_path: Optional[Path] = None
@@ -151,6 +166,23 @@ def _env_int(name: str) -> Optional[int]:
         return None
 
 
+def _env_bool(name: str) -> Optional[bool]:
+    """Parse a truthy/falsy env var. None when unset/empty."""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str) -> Optional[tuple[str, ...]]:
+    """Comma-separated env var → tuple of stripped non-empty strings."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    items = tuple(s.strip() for s in raw.split(",") if s.strip())
+    return items
+
+
 def load_config() -> LabConfig:
     """Return the effective :class:`LabConfig` for this process.
 
@@ -204,7 +236,34 @@ def load_config() -> LabConfig:
         ),
     )
 
-    cfg = LabConfig(api_url=api_url, slack=slack, alerts=alerts, mcp=mcp, source_path=src)
+    env_enabled = _env_bool("LAB_CONSULT_ENABLED")
+    yaml_enabled = _dig(lab_root, "consult", "enabled")
+    if env_enabled is not None:
+        consult_enabled = env_enabled
+    elif isinstance(yaml_enabled, bool):
+        consult_enabled = yaml_enabled
+    else:
+        consult_enabled = ConsultSection.__dataclass_fields__["enabled"].default
+
+    env_models = _env_list("LAB_CONSULT_MODELS")
+    yaml_models = _dig(lab_root, "consult", "models")
+    if env_models is not None:
+        consult_models: tuple[str, ...] = env_models
+    elif isinstance(yaml_models, list):
+        consult_models = tuple(m for m in yaml_models if isinstance(m, str) and m.strip())
+    else:
+        consult_models = ConsultSection.__dataclass_fields__["models"].default
+
+    consult = ConsultSection(enabled=consult_enabled, models=consult_models)
+
+    cfg = LabConfig(
+        api_url=api_url,
+        slack=slack,
+        alerts=alerts,
+        mcp=mcp,
+        consult=consult,
+        source_path=src,
+    )
     _LOADED["cfg"] = cfg
     return cfg
 

@@ -111,6 +111,47 @@ def test_non_numeric_env_int_is_ignored(monkeypatch):
     assert cfg.alerts.max_concurrent_investigations == 2  # default
 
 
+def test_consult_defaults(monkeypatch):
+    cfg = lab_config.load_config()
+    assert cfg.consult.enabled is True
+    assert cfg.consult.models == ("GPT-5.5", "Claude-Opus-4.7")
+
+
+def test_consult_yaml(monkeypatch, tmp_path):
+    path = _write_yaml(tmp_path, {
+        "lab": {
+            "consult": {
+                "enabled": False,
+                "models": ["Claude-Sonnet-4.6", "Gemini-3.1-Pro"],
+            }
+        }
+    })
+    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(path))
+    cfg = lab_config.reload_config()
+    assert cfg.consult.enabled is False
+    assert cfg.consult.models == ("Claude-Sonnet-4.6", "Gemini-3.1-Pro")
+
+
+def test_consult_env_overrides_yaml(monkeypatch, tmp_path):
+    path = _write_yaml(tmp_path, {
+        "lab": {"consult": {"enabled": True, "models": ["A", "B"]}}
+    })
+    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(path))
+    monkeypatch.setenv("LAB_CONSULT_ENABLED", "false")
+    monkeypatch.setenv("LAB_CONSULT_MODELS", "X, Y , Z ,")
+    cfg = lab_config.reload_config()
+    assert cfg.consult.enabled is False
+    assert cfg.consult.models == ("X", "Y", "Z")   # empty entry dropped
+
+
+def test_consult_empty_yaml_models_yields_empty(monkeypatch, tmp_path):
+    """An explicit empty list should be honoured, not silently re-defaulted."""
+    path = _write_yaml(tmp_path, {"lab": {"consult": {"models": []}}})
+    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(path))
+    cfg = lab_config.reload_config()
+    assert cfg.consult.models == ()
+
+
 def test_load_is_cached_until_reload(monkeypatch):
     cfg1 = lab_config.load_config()
     cfg2 = lab_config.load_config()

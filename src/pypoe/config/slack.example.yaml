@@ -10,7 +10,8 @@
 #   1. Explicit kwargs in code (rarely used outside tests).
 #   2. Environment variables (LAB_API_URL, LAB_SLACK_CHANNEL,
 #      LAB_SLACK_COMMAND_PREFIX, LAB_ALERT_MAX_CONCURRENT,
-#      LAB_MCP_AGENT_SOURCE, LAB_MCP_HTTP_TIMEOUT).
+#      LAB_MCP_AGENT_SOURCE, LAB_MCP_HTTP_TIMEOUT,
+#      LAB_CONSULT_ENABLED, LAB_CONSULT_MODELS).
 #   3. Values below.
 #   4. Built-in defaults.
 #
@@ -46,3 +47,17 @@ lab:
     # HTTP read timeout (seconds) for aggregator calls. 10s is the
     # default; raise if a device's /status is slow (e.g. OpenLab WMI).
     http_timeout_s: 10
+
+  consult:
+    # When true, every /alerts/kuma investigation MUST ask each Poe
+    # model below for a second opinion and synthesise their responses
+    # into the threaded Slack reply. Set to false (or leave `models`
+    # empty) to keep Claude solo.
+    enabled: true
+
+    # Poe models to consult during an investigation. Each model is
+    # called once per investigation. Names must match an entry in
+    # src/pypoe/config/models.yaml (chat_models list).
+    models:
+      - GPT-5.5
+      - Claude-Opus-4.7
