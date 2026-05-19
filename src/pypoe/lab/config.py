@@ -1,15 +1,15 @@
 """Lab-integration config loader.
 
 Loads runtime knobs for the ``pypoe.lab.*`` modules from a single YAML
-file (``slack.yaml`` at the PyPoe project root by default), with env
-vars taking precedence so quick overrides and CI don't require
-editing the YAML.
+file at ``src/pypoe/config/slack.yaml`` (gitignored; copy from
+``slack.example.yaml`` next to it). Env vars take precedence so quick
+overrides and CI don't require editing the YAML.
 
 Why YAML instead of just ``.env``? The lab integration grew enough
 knobs (api_url, alert_channel, command_prefix, mcp settings, alert
-concurrency) that a single typed config file is easier to read and
-share than a flat env-var soup. ``.env`` keeps secrets only (Slack
-bot token, signing secret, Poe API key).
+concurrency, consult model list) that a single typed config file is
+easier to read and share than a flat env-var soup. ``.env`` keeps
+secrets only (Slack bot token, signing secret, Poe API key).
 
 Precedence (highest wins):
   1. Explicit kwargs in code (e.g. ``LabClient(base_url=...)``).
@@ -72,32 +72,27 @@ class LabConfig:
 # ---------------------------------------------------------------------------
 
 
-def _project_root() -> Path:
-    """Find PyPoe's project root.
+def _package_config_dir() -> Path:
+    """Return the directory holding the lab-integration YAML configs.
 
-    Walk up from this file until we hit a directory containing
-    ``pyproject.toml``. Falls back to the cwd if nothing is found —
-    that matches user expectation of "drop slack.yaml next to my
-    project files".
+    Lives next to ``pypoe.lab.config`` inside the installed package, at
+    ``src/pypoe/config/`` in an editable install. Keeps user-edited
+    config tucked away from the project root.
     """
-    here = Path(__file__).resolve()
-    for parent in (here, *here.parents):
-        if (parent / "pyproject.toml").is_file():
-            return parent
-    return Path.cwd()
+    return Path(__file__).resolve().parent.parent / "config"
 
 
 def _candidate_paths() -> list[Path]:
     """All YAML locations to try, in priority order.
 
     If ``PYPOE_LAB_CONFIG`` is set, it is **authoritative** — we do not
-    fall back to the project-root file, so tests can disable YAML
+    fall back to the packaged location, so tests can disable YAML
     loading by pointing this env var at a non-existent path.
     """
     custom = os.environ.get("PYPOE_LAB_CONFIG")
     if custom:
         return [Path(custom).expanduser().resolve()]
-    return [_project_root() / DEFAULT_FILENAME]
+    return [_package_config_dir() / DEFAULT_FILENAME]
 
 
 def _load_yaml_file() -> tuple[dict, Optional[Path]]:

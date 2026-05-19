@@ -23,8 +23,9 @@ src/.env
 .venv
 venv/
 
-# Lab-integration site config (template is slack.example.yaml)
-slack.yaml
+# Lab-integration site config (templates committed as *.example.yaml)
+src/pypoe/config/slack.yaml
+src/pypoe/config/models.yaml
 
 # Editor/OS noise
 .idea/
