@@ -118,7 +118,9 @@ async def test_custom_prefix_namespaces_commands():
 
 @pytest.mark.asyncio
 async def test_prefix_from_env(monkeypatch):
+    from pypoe.lab import config as lab_config
     monkeypatch.setenv("LAB_SLACK_COMMAND_PREFIX", "/sdl3-lab-")
+    lab_config.reload_config()  # autouse fixture cached the empty value
     app, client = _setup()
     registered = slack_commands.register_lab_commands(app, client)
     assert all(c.startswith("/sdl3-lab-") for c in registered)

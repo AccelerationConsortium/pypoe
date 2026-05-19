@@ -233,7 +233,8 @@ async def _ask_human(
     if not token:
         return {"answer": None, "timed_out": False, "error": "SLACK_BOT_TOKEN unset"}
 
-    ch = channel or os.environ.get("LAB_SLACK_CHANNEL", "#lab-alerts")
+    from .config import load_config
+    ch = channel or load_config().slack.alert_channel
     slack = AsyncWebClient(token=token)
 
     post = await slack.chat_postMessage(channel=ch, text=f":question: {question}")

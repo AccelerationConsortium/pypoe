@@ -142,7 +142,9 @@ async def test_get_raises_on_4xx():
 
 @pytest.mark.asyncio
 async def test_base_url_from_env(monkeypatch):
+    from pypoe.lab import config as lab_config
     monkeypatch.setenv("LAB_API_URL", "http://override.example:9000")
+    lab_config.reload_config()  # autouse fixture cached the empty value
     client = LabClient()
     try:
         assert client.base_url == "http://override.example:9000"

@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - web-ui extra not installed
     status = None  # type: ignore[assignment]
     _FASTAPI_AVAILABLE = False
 
+from .config import load_config
 from .http_client import LabClient
 
 logger = logging.getLogger(__name__)
@@ -99,13 +100,14 @@ def register_alert_routes(
         )
 
     lab = client or LabClient()
+    cfg = load_config()
     concurrency = (
         max_concurrent
         if max_concurrent is not None
-        else int(os.environ.get("LAB_ALERT_MAX_CONCURRENT", _DEFAULT_MAX_CONCURRENT))
+        else (cfg.alerts.max_concurrent_investigations or _DEFAULT_MAX_CONCURRENT)
     )
     semaphore = asyncio.Semaphore(concurrency)
-    channel = slack_channel or os.environ.get("LAB_SLACK_CHANNEL", "#lab-alerts")
+    channel = slack_channel or cfg.slack.alert_channel
 
     router = APIRouter(prefix="/alerts", tags=["lab-alerts"])
 

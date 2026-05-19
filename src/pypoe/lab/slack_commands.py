@@ -50,12 +50,12 @@ def register_lab_commands(
     Typed as ``Any`` so importing this module never requires
     ``slack_bolt`` to be installed (the registration call sites do).
     """
-    import os
+    from .config import load_config
 
     prefix = (
         command_prefix
         if command_prefix is not None
-        else os.environ.get("LAB_SLACK_COMMAND_PREFIX", DEFAULT_COMMAND_PREFIX)
+        else (load_config().slack.command_prefix or DEFAULT_COMMAND_PREFIX)
     )
     if not prefix.startswith("/"):
         raise ValueError(

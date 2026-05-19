@@ -25,7 +25,10 @@ except ImportError as exc:  # pragma: no cover - lab extra not installed
 else:
     _HTTPX_IMPORT_ERROR = None
 
+from .config import load_config
 
+
+# Hardcoded fallbacks if neither slack.yaml nor env vars set anything.
 DEFAULT_BASE_URL = "http://localhost:8001"
 DEFAULT_TIMEOUT_S = 10.0
 DEFAULT_AGENT_SOURCE = "claude-agent"
@@ -48,20 +51,17 @@ class LabClient:
                 "lab extra: pip install -e '.[lab]'"
             ) from _HTTPX_IMPORT_ERROR
 
-        self.base_url = (
-            base_url
-            or os.environ.get("LAB_API_URL")
-            or DEFAULT_BASE_URL
-        ).rstrip("/")
+        # Defaults flow from slack.yaml (when present) + env vars; explicit
+        # kwargs always win. See pypoe.lab.config for full precedence rules.
+        cfg = load_config()
+        self.base_url = (base_url or cfg.api_url or DEFAULT_BASE_URL).rstrip("/")
         self.timeout = (
             timeout
             if timeout is not None
-            else float(os.environ.get("LAB_MCP_HTTP_TIMEOUT", DEFAULT_TIMEOUT_S))
+            else (cfg.mcp.http_timeout_s or DEFAULT_TIMEOUT_S)
         )
         self.agent_source = (
-            agent_source
-            or os.environ.get("LAB_MCP_AGENT_SOURCE")
-            or DEFAULT_AGENT_SOURCE
+            agent_source or cfg.mcp.agent_source or DEFAULT_AGENT_SOURCE
         )
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
