@@ -513,12 +513,12 @@ class WebApp:
                 conversations = await self.client.get_conversations()
                 available_bots = await self.client.get_available_bots()
                 return self.templates.TemplateResponse(
-                    "index.html", 
+                    request,
+                    "index.html",
                     {
-                        "request": request,
                         "conversations": conversations,
-                        "available_bots": available_bots
-                    }
+                        "available_bots": available_bots,
+                    },
                 )
             except Exception as e:
                 return HTMLResponse(f"Error loading interface: {str(e)}", status_code=500)
@@ -593,11 +593,9 @@ class WebApp:
                     conv['last_message'] = messages[-1] if messages else None
                 
                 return self.templates.TemplateResponse(
+                    request,
                     "history.html",
-                    {
-                        "request": request,
-                        "conversations": conversations
-                    }
+                    {"conversations": conversations},
                 )
             except Exception as e:
                 return HTMLResponse(f"Error loading history: {str(e)}", status_code=500)
@@ -621,12 +619,9 @@ class WebApp:
                 conversation['word_count'] = sum(len(msg['content'].split()) for msg in messages)
                 
                 return self.templates.TemplateResponse(
+                    request,
                     "conversation_detail.html",
-                    {
-                        "request": request,
-                        "conversation": conversation,
-                        "messages": messages
-                    }
+                    {"conversation": conversation, "messages": messages},
                 )
             except Exception as e:
                 if isinstance(e, HTTPException):
@@ -638,10 +633,9 @@ class WebApp:
             """Settings and backend configuration page."""
             try:
                 return self.templates.TemplateResponse(
+                    request,
                     "settings.html",
-                    {
-                        "request": request
-                    }
+                    {},
                 )
             except Exception as e:
                 return HTMLResponse(f"Error loading settings: {str(e)}", status_code=500)
@@ -651,10 +645,9 @@ class WebApp:
             """Storage monitoring and management page."""
             try:
                 return self.templates.TemplateResponse(
+                    request,
                     "storage.html",
-                    {
-                        "request": request
-                    }
+                    {},
                 )
             except Exception as e:
                 return HTMLResponse(f"Error loading storage management: {str(e)}", status_code=500)
