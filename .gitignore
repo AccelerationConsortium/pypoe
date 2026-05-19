@@ -23,6 +23,9 @@ src/.env
 .venv
 venv/
 
+# Lab-integration site config (template is slack.example.yaml)
+slack.yaml
+
 # Editor/OS noise
 .idea/
 .vscode/

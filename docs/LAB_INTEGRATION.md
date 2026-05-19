@@ -58,17 +58,72 @@ pip install -e ".[dev]"          # everything, including [lab]
 
 ## Configure
 
-| Variable | Used by | Default | Purpose |
-|---|---|---|---|
-| `LAB_API_URL` | all | `http://localhost:8001` | Base URL of the `ac-organic-lab` aggregator. |
-| `LAB_SLACK_CHANNEL` | mcp, alerts | `#lab-alerts` | Channel for Kuma alerts and `ask_human` prompts. |
-| `LAB_MCP_AGENT_SOURCE` | mcp | `claude-agent` | Tag stamped into the `extra.source` of every journaled observation. |
-| `LAB_MCP_HTTP_TIMEOUT` | all | `10` (seconds) | HTTP read timeout for aggregator calls. |
-| `LAB_ALERT_MAX_CONCURRENT` | alerts | `2` | Cap on simultaneous `claude -p` investigations. |
-| `LAB_SLACK_COMMAND_PREFIX` | slack bot | `/lab-` | Namespace for the slash commands. Set to `/sdl2-lab-` (or similar) when one Slack workspace serves multiple labs and each needs its own commands. |
-| `PYPOE_ENABLE_LAB` | slack bot, web | unset | Set to any non-empty value to wire `/lab-*` and `/alerts/kuma` without overriding `LAB_API_URL`. |
-| `SLACK_BOT_TOKEN` | mcp, alerts | (existing PyPoe env) | Required for `ask_human` and Kuma → Slack posts. |
-| `POE_API_KEY` | `consult_poe` via PyPoe CLI | (existing PyPoe env) | Required if Claude calls the `consult_poe` MCP tool. |
+Two files cooperate:
+
+- **`slack.yaml`** at PyPoe project root holds the lab-side knobs
+  (aggregator URL, slash-command prefix, alert channel, etc.). This
+  file is *gitignored* and site-specific; a template
+  (`slack.example.yaml`) is committed for you to copy.
+- **`.env`** keeps **secrets only** — `SLACK_BOT_TOKEN`,
+  `SLACK_SIGNING_SECRET`, `POE_API_KEY`. Nothing in `.env` controls
+  lab behaviour; that all moved to `slack.yaml`.
+
+Either file is optional. With neither present, the loader falls back
+to the hardcoded defaults in `pypoe.lab.config.LabConfig` and a
+`pypoe lab-mcp` server still starts cleanly against
+`http://localhost:8001`.
+
+### `slack.yaml` schema
+
+```yaml
+lab:
+  api_url: http://localhost:8001        # ac-organic-lab aggregator
+  slack:
+    alert_channel: "#lab-alerts"        # Kuma alerts + ask_human
+    command_prefix: /lab-               # namespace for /lab-* commands
+  alerts:
+    max_concurrent_investigations: 2    # cap on simultaneous claude -p
+  mcp:
+    agent_source: claude-agent          # stamped into observations
+    http_timeout_s: 10                  # aggregator HTTP read timeout
+```
+
+To bring up a second lab in the same Slack workspace, give it a
+different prefix and channel:
+
+```yaml
+lab:
+  slack:
+    alert_channel: "#sdl2-lab-alerts"
+    command_prefix: /sdl2-lab-
+```
+
+### Override precedence
+
+Highest wins:
+
+1. Explicit kwargs in code (rare; tests / advanced wiring).
+2. Environment variables:
+   `LAB_API_URL`, `LAB_SLACK_CHANNEL`, `LAB_SLACK_COMMAND_PREFIX`,
+   `LAB_ALERT_MAX_CONCURRENT`, `LAB_MCP_AGENT_SOURCE`,
+   `LAB_MCP_HTTP_TIMEOUT`.
+3. Values in `slack.yaml`.
+4. Defaults baked into `pypoe.lab.config`.
+
+`PYPOE_LAB_CONFIG=<path>` overrides the file location entirely;
+when set, the loader looks only at that path (no fallback to the
+project-root file), so tests and one-off configs are easy.
+
+### Secrets stay in `.env`
+
+```
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+POE_API_KEY=...
+```
+
+Optionally, `PYPOE_ENABLE_LAB=1` in `.env` will wire `/lab-*` and
+`/alerts/kuma` even when `slack.yaml` is missing.
 
 There is **no** `LAB_MCP_ENABLE_CONTROL` — control is intentionally
 not exposed.

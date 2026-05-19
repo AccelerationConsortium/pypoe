@@ -1,0 +1,48 @@
+# PyPoe lab-integration config (committed template).
+#
+# Copy this file to `slack.yaml` (gitignored) at the same location and
+# adjust for your lab. Settings here are read by `pypoe.lab.*` modules
+# at process start (slack bot, web app's /alerts/kuma, MCP server,
+# `pypoe lab-status` CLI). PyPoe's own Slack bot settings (bot token,
+# signing secret) stay in `.env`, not here.
+#
+# Precedence (highest wins):
+#   1. Explicit kwargs in code (rarely used outside tests).
+#   2. Environment variables (LAB_API_URL, LAB_SLACK_CHANNEL,
+#      LAB_SLACK_COMMAND_PREFIX, LAB_ALERT_MAX_CONCURRENT,
+#      LAB_MCP_AGENT_SOURCE, LAB_MCP_HTTP_TIMEOUT).
+#   3. Values below.
+#   4. Built-in defaults.
+#
+# See PyPoe/docs/LAB_INTEGRATION.md for the full reference.
+
+lab:
+  # Aggregator (ac-organic-lab/api) base URL. Used by every lab module.
+  api_url: http://localhost:8001
+
+  slack:
+    # Channel that Kuma alerts and `ask_human` post into. Must exist
+    # and the PyPoe bot must be a member.
+    alert_channel: "#lab-alerts"
+
+    # Namespace prefix for the slash commands. Each lab in a shared
+    # workspace should pick its own prefix so the command names don't
+    # collide. The bot registers <prefix>{status,device,runs,sensors,
+    # actions}. Must start with "/" and end with "-" (or any separator
+    # that produces valid Slack command names).
+    command_prefix: /lab-
+
+  alerts:
+    # Cap on simultaneous `claude -p` investigations from /alerts/kuma.
+    # Survives alert storms; raise if you have lots of monitors.
+    max_concurrent_investigations: 2
+
+  mcp:
+    # Stamped into the `extra.source` of every observation that
+    # `append_observation()` writes. Useful to filter the dashboard's
+    # history sidebar by who wrote it.
+    agent_source: claude-agent
+
+    # HTTP read timeout (seconds) for aggregator calls. 10s is the
+    # default; raise if a device's /status is slow (e.g. OpenLab WMI).
+    http_timeout_s: 10
