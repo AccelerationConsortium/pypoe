@@ -48,16 +48,100 @@ if not WEB_AVAILABLE:
         "Web UI dependencies not installed. Please install with: pip install -e '.[web-ui]'"
     )
 
+# --- Debate role presets ---
+#
+# These map each preset key to a system-prompt blurb that's interpolated
+# into every model's debate prompt. Keep blurbs imperative, second-person,
+# and brief — long descriptions push the actual topic out of attention.
+DEBATE_ROLE_PRESETS: Dict[str, str] = {
+    "defend": "Argue in favor of the topic. Steelman the strongest version "
+              "of the affirmative case.",
+    "critique": "Find flaws, edge cases, and missed risks. Be specific.",
+    "steelman_opposite": "Argue the strongest version of the opposing view, "
+                          "even if you personally disagree.",
+    "devils_advocate": "Pick the position the user is least likely to be "
+                        "considering and defend it.",
+    "synthesizer": "Find common ground between the other participants and "
+                    "produce a merged recommendation.",
+    "custom": None,  # uses custom_label
+}
+
+
 # Pydantic models for request bodies
+class BotAssignment(BaseModel):
+    role: str
+    custom_label: Optional[str] = None
+
+
 class ConversationCreate(BaseModel):
     title: Optional[str] = None  # Optional title, will generate timestamp if empty
     bot_name: str
     chat_mode: Optional[str] = "chatbot"  # chatbot, group, debate
+    # Required for chat_mode in ('group','debate'); 2-3 participants drawn
+    # from CHAT_MODELS. Ignored for 'chatbot'.
+    bot_names: Optional[List[str]] = None
+    # Required for chat_mode='debate'. Keys must equal bot_names exactly.
+    bot_assignments: Optional[Dict[str, BotAssignment]] = None
+    # Required for chat_mode='debate'. The pinned shared context.
+    debate_topic: Optional[str] = None
+
+
+class ConversationPatch(BaseModel):
+    """Partial update payload for PATCH /api/conversation/{id}.
+
+    Currently scoped to debate-only fields — the topic and per-bot role
+    assignments can be edited at any time and take effect on the next turn.
+    """
+    debate_topic: Optional[str] = None
+    bot_assignments: Optional[Dict[str, BotAssignment]] = None
+
 
 class MessageSend(BaseModel):
     message: str
     bot_name: Optional[str] = None
     chat_mode: Optional[str] = None
+
+
+def _validate_bot_assignments(
+    assignments: Dict[str, BotAssignment],
+    bot_names: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Validate debate role assignments and return a JSON-serialisable dict.
+
+    Raises HTTPException on the first failure so the caller doesn't have to
+    repeat error wrapping. The returned dict is the on-disk shape:
+    ``{bot_name: {role, custom_label}}``.
+    """
+    if set(assignments.keys()) != set(bot_names):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"bot_assignments keys ({sorted(assignments.keys())}) "
+                f"must exactly match bot_names ({sorted(bot_names)})."
+            ),
+        )
+    result: Dict[str, Dict[str, Any]] = {}
+    for bot, assignment in assignments.items():
+        if assignment.role not in DEBATE_ROLE_PRESETS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown role '{assignment.role}' for bot '{bot}'. "
+                    f"Pick one of: {sorted(DEBATE_ROLE_PRESETS.keys())}."
+                ),
+            )
+        if assignment.role == "custom":
+            label = (assignment.custom_label or "").strip()
+            if not label:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"role='custom' requires a non-empty custom_label (bot '{bot}').",
+                )
+        result[bot] = {
+            "role": assignment.role,
+            "custom_label": (assignment.custom_label or "").strip() or None,
+        }
+    return result
 
 class ClaimRequest(BaseModel):
     owner: str
@@ -257,6 +341,225 @@ class WebApp:
             print(f"Failed to generate and save topic: {e}")
             import traceback
             traceback.print_exc()
+
+    async def _fan_out_to_models(
+        self,
+        websocket: WebSocket,
+        conversation: Dict[str, Any],
+        user_message: str,
+    ) -> None:
+        """Stream a user message to all participants of a group/debate conversation.
+
+        Each bot reply streams onto the shared WebSocket in frames tagged
+        ``model_name``. The single user row and each assistant row are saved
+        once. An ``asyncio.Lock`` serialises frame writes so concurrent
+        deltas don't interleave inside a single JSON line.
+
+        For ``chat_mode='debate'`` each model receives a per-bot transcript
+        whose first entry is a synthesised system message naming the topic,
+        this model's assigned role, and every other participant's role.
+        """
+
+        conversation_id = conversation['id']
+        bot_names: List[str] = conversation.get('bot_names') or []
+        chat_mode: str = conversation.get('chat_mode') or 'group'
+        debate_topic: Optional[str] = conversation.get('debate_topic')
+        bot_assignments: Dict[str, Dict[str, Any]] = (
+            conversation.get('bot_assignments') or {}
+        )
+
+        # Echo the user message to the client.
+        await websocket.send_text(json.dumps({
+            "type": "user_message",
+            "content": user_message,
+            "role": "user",
+        }))
+
+        # Persist the user row once, before any model reads the transcript.
+        await self.client.history.add_message(
+            conversation_id=conversation_id,
+            role="user",
+            content=user_message,
+        )
+
+        # Snapshot history; we'll rebuild the transcript per-bot so each
+        # model can tell which assistant turns came from itself vs. the
+        # other participants.
+        existing = await self.client.get_conversation_messages(conversation_id)
+
+        send_lock = asyncio.Lock()
+
+        def _transcript_for(bot_name: str) -> List[Dict[str, str]]:
+            """Build a per-bot transcript.
+
+            Other bots' assistant turns are attributed with ``[from <Model>]:``
+            so the receiving bot can distinguish speakers. Consecutive
+            assistant turns from one round are collapsed into a single
+            assistant turn separated by blank lines, so the upstream API
+            still sees user/assistant alternation.
+            """
+            out: List[Dict[str, str]] = []
+            pending: List[str] = []
+
+            def flush() -> None:
+                if pending:
+                    out.append({"role": "assistant", "content": "\n\n".join(pending)})
+                    pending.clear()
+
+            for m in existing:
+                if m["role"] == "assistant":
+                    model = m.get("model_name")
+                    if model and model != bot_name:
+                        pending.append(f"[from {model}]: {m['content']}")
+                    else:
+                        pending.append(m["content"])
+                else:
+                    flush()
+                    out.append({"role": m["role"], "content": m["content"]})
+            flush()
+
+            if chat_mode == "debate":
+                system_prompt = self._build_debate_system_prompt(
+                    topic=debate_topic or "",
+                    this_bot=bot_name,
+                    bot_names=bot_names,
+                    bot_assignments=bot_assignments,
+                )
+            else:
+                # Group mode: tell the bot the multi-bot convention so it
+                # trusts the `[from <Model>]:` tag rather than treating it
+                # as a prompt-injection attempt.
+                system_prompt = self._build_group_system_prompt(
+                    this_bot=bot_name,
+                    bot_names=bot_names,
+                )
+            if system_prompt:
+                return [{"role": "system", "content": system_prompt}, *out]
+            return out
+
+        async def _stream_one(bot_name: str) -> None:
+            async with send_lock:
+                await websocket.send_text(json.dumps({
+                    "type": "bot_response_start",
+                    "role": "assistant",
+                    "model_name": bot_name,
+                }))
+
+            full_response = ""
+            try:
+                async for partial in self.client.send_conversation(
+                    messages=_transcript_for(bot_name),
+                    bot_name=bot_name,
+                    conversation_id=conversation_id,
+                    save_history=False,
+                ):
+                    if not partial:
+                        continue
+                    full_response += partial
+                    async with send_lock:
+                        await websocket.send_text(json.dumps({
+                            "type": "bot_response_chunk",
+                            "content": partial,
+                            "role": "assistant",
+                            "model_name": bot_name,
+                        }))
+            except Exception as exc:
+                async with send_lock:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "content": f"{bot_name}: {exc}",
+                        "model_name": bot_name,
+                    }))
+
+            if full_response:
+                await self.client.history.add_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=full_response,
+                    model_name=bot_name,
+                )
+
+            async with send_lock:
+                await websocket.send_text(json.dumps({
+                    "type": "bot_response_end",
+                    "role": "assistant",
+                    "model_name": bot_name,
+                }))
+
+        await asyncio.gather(
+            *(_stream_one(bot) for bot in bot_names),
+            return_exceptions=False,
+        )
+
+    @staticmethod
+    def _build_group_system_prompt(
+        *,
+        this_bot: str,
+        bot_names: List[str],
+    ) -> Optional[str]:
+        """Brief preamble for group-chat fan-out.
+
+        The point is to make the multi-bot context legible so each model
+        understands that text tagged with ``[from <ModelName>]:`` inside
+        an assistant turn was produced by a peer, not by itself. Without
+        this, models tend to read the tag as a prompt-injection attempt
+        and refuse to engage with it.
+        """
+        others = [b for b in bot_names if b != this_bot]
+        if not others:
+            return None
+        others_list = ", ".join(others)
+        return (
+            f"You are {this_bot}, participating in a group chat with: "
+            f"{others_list}.\n\n"
+            "In the transcript, your own prior replies appear as normal "
+            "assistant turns. The other models' replies appear within "
+            "assistant turns prefixed with `[from <ModelName>]:`. These "
+            "prefixed segments are NOT your own words — they are the other "
+            "models' contributions, included so you have the full chat "
+            "context.\n\n"
+            "When the user asks about another model, refer to that model by name."
+        )
+
+    @staticmethod
+    def _build_debate_system_prompt(
+        *,
+        topic: str,
+        this_bot: str,
+        bot_names: List[str],
+        bot_assignments: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """Assemble a model's debate system message.
+
+        Names the topic, this model's role, and every other participant's
+        role so the model can address them explicitly. The phrasing matches
+        the template in CLAUDE.local.md Phase 2 §"System prompt template".
+        """
+
+        def _describe(bot: str) -> str:
+            assignment = bot_assignments.get(bot, {}) or {}
+            role = assignment.get("role") or "custom"
+            if role == "custom":
+                label = assignment.get("custom_label") or ""
+                return label or "a custom role"
+            blurb = DEBATE_ROLE_PRESETS.get(role)
+            return blurb or role
+
+        others_lines = [
+            f"  - {bot}: {_describe(bot)}"
+            for bot in bot_names if bot != this_bot
+        ]
+        others_block = "\n".join(others_lines) if others_lines else "  (none)"
+
+        return (
+            "You are participating in a structured debate.\n\n"
+            f"TOPIC:\n{topic}\n\n"
+            f"YOUR ROLE: {_describe(this_bot)}\n\n"
+            "OTHER PARTICIPANTS:\n"
+            f"{others_block}\n\n"
+            "Reply concisely. You may reference other participants by name. "
+            "The transcript follows."
+        )
 
     def _check_credentials(self, credentials: HTTPBasicCredentials = Depends(HTTPBasic())):
         if not self.config.web_username:
@@ -663,14 +966,82 @@ class WebApp:
                     title = f"Chat {timestamp}"
                 else:
                     title = conversation_data.title.strip()
-                
-                conversation_id = await self.client.history.create_conversation(
+
+                chat_mode = conversation_data.chat_mode or "chatbot"
+                bot_names = conversation_data.bot_names
+                bot_assignments_payload = conversation_data.bot_assignments
+                debate_topic = conversation_data.debate_topic
+
+                # Group/debate need an explicit participant list. Validate
+                # the count and that every name is a known chat model so a
+                # typo on the way in fails fast instead of much later when
+                # the user tries to send their first message.
+                if chat_mode in ("group", "debate"):
+                    if not bot_names:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"chat_mode='{chat_mode}' requires bot_names (list of 2-3 models).",
+                        )
+                    if len(bot_names) != 2:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"chat_mode='{chat_mode}' requires exactly 2 bot_names; got {len(bot_names)}.",
+                        )
+                    if len(set(bot_names)) != len(bot_names):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="bot_names must be unique.",
+                        )
+                    available = set(CHAT_MODELS)
+                    unknown = [b for b in bot_names if b not in available]
+                    if unknown:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Unknown bot_names: {unknown}. Pick from CHAT_MODELS.",
+                        )
+                    # ``bot_name`` (singular) is still stored as the first
+                    # participant; this keeps any code that reads only
+                    # ``conversation.bot_name`` working in a sensible way.
+                    primary_bot = bot_names[0]
+                else:
+                    bot_names = None
+                    primary_bot = conversation_data.bot_name
+
+                # Debate mode requires a pinned topic and a complete set
+                # of role assignments. Group mode ignores both.
+                bot_assignments_serialised: Optional[Dict[str, Dict[str, Any]]] = None
+                if chat_mode == "debate":
+                    if not (debate_topic and debate_topic.strip()):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="chat_mode='debate' requires a non-empty debate_topic.",
+                        )
+                    debate_topic = debate_topic.strip()
+                    if not bot_assignments_payload:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="chat_mode='debate' requires bot_assignments for every participant.",
+                        )
+                    bot_assignments_serialised = _validate_bot_assignments(
+                        bot_assignments_payload, bot_names
+                    )
+                else:
+                    debate_topic = None
+
+                # Go through the client wrapper so HistoryManager is lazily
+                # initialized; otherwise a fresh DB has no tables yet.
+                conversation_id = await self.client.create_conversation(
                     title=title,
-                    bot_name=conversation_data.bot_name,
-                    chat_mode=conversation_data.chat_mode,
-                    topic=None  # Topic will be generated from first message
+                    bot_name=primary_bot,
+                    chat_mode=chat_mode,
+                    topic=None,  # Topic will be generated from first message
+                    bot_names=bot_names,
+                    bot_assignments=bot_assignments_serialised,
+                    debate_topic=debate_topic,
                 )
                 return JSONResponse({"conversation_id": conversation_id})
+            except HTTPException:
+                raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
         
@@ -712,6 +1083,56 @@ class WebApp:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
         
+        @self.app.patch("/api/conversation/{conversation_id}", dependencies=dependencies)
+        async def patch_conversation(conversation_id: str, payload: ConversationPatch):
+            """Edit a conversation's debate topic and/or role assignments.
+
+            Only debate-mode conversations should be touched here in v1;
+            other modes simply have nothing to patch and rejecting the call
+            saves a confusing no-op.
+            """
+            try:
+                conversations = await self.client.get_conversations()
+                conv = next((c for c in conversations if c['id'] == conversation_id), None)
+                if not conv:
+                    raise HTTPException(status_code=404, detail="Conversation not found")
+                if conv.get('chat_mode') != 'debate':
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Only debate conversations can be patched.",
+                    )
+
+                new_topic: Optional[str] = None
+                if payload.debate_topic is not None:
+                    if not payload.debate_topic.strip():
+                        raise HTTPException(
+                            status_code=400,
+                            detail="debate_topic must be non-empty if provided.",
+                        )
+                    new_topic = payload.debate_topic.strip()
+
+                new_assignments: Optional[Dict[str, Dict[str, Any]]] = None
+                if payload.bot_assignments is not None:
+                    bot_names = conv.get('bot_names') or []
+                    new_assignments = _validate_bot_assignments(
+                        payload.bot_assignments, bot_names
+                    )
+
+                await self.client.history.update_conversation_debate_metadata(
+                    conversation_id,
+                    debate_topic=new_topic,
+                    bot_assignments=new_assignments,
+                )
+                return JSONResponse({
+                    "conversation_id": conversation_id,
+                    "debate_topic": new_topic if new_topic is not None else conv.get('debate_topic'),
+                    "bot_assignments": new_assignments if new_assignments is not None else conv.get('bot_assignments'),
+                })
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
         @self.app.delete("/api/conversation/{conversation_id}", dependencies=dependencies)
         async def delete_conversation(conversation_id: str):
             """Delete a conversation with enhanced media cleanup tracking."""
@@ -907,26 +1328,40 @@ class WebApp:
                 conversation_bot = conversation.get('bot_name') or DEFAULT_CHAT_MODEL
                 conversation_chat_mode = conversation.get('chat_mode', 'chatbot')
                 
+                # Group/debate conversations cannot use the non-streaming
+                # /send fallback; they require the WebSocket fan-out path.
+                if conversation_chat_mode in ('group', 'debate'):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Conversations with chat_mode='{conversation_chat_mode}' "
+                               f"must use the WebSocket endpoint /ws/chat/{{id}}.",
+                    )
+
                 # Validation for conversations with existing messages
                 if existing_messages:
                     user_messages = [msg for msg in existing_messages if msg.get('role') == 'user']
-                    
-                    # Bot locking: prevent changing bot mid-conversation
-                    if user_messages and message_data.bot_name and message_data.bot_name != conversation_bot:
+
+                    # Bot locking only applies to single-bot chatbot mode.
+                    if (
+                        conversation_chat_mode == 'chatbot'
+                        and user_messages
+                        and message_data.bot_name
+                        and message_data.bot_name != conversation_bot
+                    ):
                         raise HTTPException(
-                            status_code=400, 
+                            status_code=400,
                             detail=f"Cannot change bot mid-conversation. This conversation is locked to {conversation_bot}. "
                                    f"Current conversation has {len(user_messages)} user messages."
                         )
-                    
+
                     # Chat mode locking: prevent changing chat mode mid-conversation
                     if user_messages and message_data.chat_mode and message_data.chat_mode != conversation_chat_mode:
                         raise HTTPException(
-                            status_code=400, 
+                            status_code=400,
                             detail=f"Cannot change chat mode mid-conversation. This conversation is locked to {conversation_chat_mode} mode. "
                                    f"Current conversation has {len(user_messages)} user messages."
                         )
-                    
+
                     bot_name = conversation_bot
                 else:
                     # New conversation - allow bot and chat mode selection
@@ -948,6 +1383,10 @@ class WebApp:
                     "bot_name": bot_name,
                     "conversation_id": conversation_id
                 })
+            except HTTPException:
+                # Validation rejections already carry the right status; don't
+                # paint over them with a generic 500.
+                raise
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
 
@@ -1674,7 +2113,11 @@ class WebApp:
                     
                     user_message = message_data.get("message", "")
                     requested_bot = message_data.get("bot_name") or DEFAULT_CHAT_MODEL
-                    requested_chat_mode = message_data.get("chat_mode", "chatbot")
+                    # ``None`` (not provided) means "keep the conversation's
+                    # mode". Defaulting to "chatbot" here would fire a spurious
+                    # mode-lock error every time a group/debate frontend (which
+                    # doesn't set this field) sends a follow-up.
+                    requested_chat_mode = message_data.get("chat_mode")
                     
                     if not user_message:
                         continue
@@ -1695,77 +2138,106 @@ class WebApp:
                         existing_messages = await self.client.get_conversation_messages(conversation_id)
                         conversation_bot = conversation.get('bot_name') or DEFAULT_CHAT_MODEL
                         conversation_chat_mode = conversation.get('chat_mode', 'chatbot')
-                        
+                        conversation_bot_names = conversation.get('bot_names') or []
+                        is_multi_mode = (
+                            conversation_chat_mode in ('group', 'debate')
+                            and conversation_bot_names
+                        )
+
                         # Validation for conversations with existing messages
                         if existing_messages:
                             user_messages = [msg for msg in existing_messages if msg.get('role') == 'user']
-                            
-                            # Bot locking: prevent changing bot mid-conversation
-                            if user_messages and requested_bot != conversation_bot:
+
+                            # Bot locking only applies to single-bot chatbot mode.
+                            # Group/debate freeze ``bot_names`` at creation; the
+                            # requested ``bot_name`` in WS frames is ignored.
+                            if (
+                                conversation_chat_mode == 'chatbot'
+                                and user_messages
+                                and requested_bot != conversation_bot
+                            ):
                                 await websocket.send_text(json.dumps({
                                     "type": "error",
                                     "content": f"Cannot change bot mid-conversation. This conversation is locked to {conversation_bot}. "
                                               f"Current conversation has {len(user_messages)} user messages."
                                 }))
                                 continue
-                            
-                            # Chat mode locking: prevent changing chat mode mid-conversation
-                            if user_messages and requested_chat_mode != conversation_chat_mode:
+
+                            # Chat mode locking: only enforce when the client
+                            # actively asks for a different mode. Missing field
+                            # = "use whatever the conversation already is".
+                            if (
+                                user_messages
+                                and requested_chat_mode
+                                and requested_chat_mode != conversation_chat_mode
+                            ):
                                 await websocket.send_text(json.dumps({
                                     "type": "error",
                                     "content": f"Cannot change chat mode mid-conversation. This conversation is locked to {conversation_chat_mode} mode. "
                                               f"Current conversation has {len(user_messages)} user messages."
                                 }))
                                 continue
-                            
+
                             bot_name = conversation_bot
                         else:
                             # New conversation - allow bot and chat mode selection
                             bot_name = requested_bot
-                        
+
                     except Exception as e:
                         await websocket.send_text(json.dumps({
                             "type": "error",
                             "content": f"Error validating conversation: {str(e)}"
                         }))
                         continue
-                    
-                    # Send user message back to confirm receipt
-                    await websocket.send_text(json.dumps({
-                        "type": "user_message",
-                        "content": user_message,
-                        "role": "user"
-                    }))
-                    
-                    # Send bot response start indicator
-                    await websocket.send_text(json.dumps({
-                        "type": "bot_response_start",
-                        "role": "assistant"
-                    }))
-                    
-                    # Stream bot response (filtering already handled in client.py)
-                    full_response = ""
-                    
-                    async for partial_response in self.client.send_message(
-                        message=user_message,
-                        bot_name=bot_name,
-                        conversation_id=conversation_id,
-                        save_history=True
-                    ):
-                        # Only send non-empty chunks (client.py already filters generating messages)
-                        if partial_response:
-                            full_response += partial_response
-                            await websocket.send_text(json.dumps({
-                                "type": "bot_response_chunk",
-                                "content": partial_response,
-                                "role": "assistant"
-                            }))
-                    
-                    # Send bot response end indicator
-                    await websocket.send_text(json.dumps({
-                        "type": "bot_response_end",
-                        "role": "assistant"
-                    }))
+
+                    if is_multi_mode:
+                        # Fan out to all participants concurrently. The helper
+                        # owns echoing the user message, saving history, and
+                        # streaming per-model frames tagged with ``model_name``.
+                        await self._fan_out_to_models(
+                            websocket=websocket,
+                            conversation=conversation,
+                            user_message=user_message,
+                        )
+                    else:
+                        # Single-bot path (existing behaviour, unchanged shape).
+
+                        # Send user message back to confirm receipt
+                        await websocket.send_text(json.dumps({
+                            "type": "user_message",
+                            "content": user_message,
+                            "role": "user"
+                        }))
+
+                        # Send bot response start indicator
+                        await websocket.send_text(json.dumps({
+                            "type": "bot_response_start",
+                            "role": "assistant"
+                        }))
+
+                        # Stream bot response (filtering already handled in client.py)
+                        full_response = ""
+
+                        async for partial_response in self.client.send_message(
+                            message=user_message,
+                            bot_name=bot_name,
+                            conversation_id=conversation_id,
+                            save_history=True
+                        ):
+                            # Only send non-empty chunks (client.py already filters generating messages)
+                            if partial_response:
+                                full_response += partial_response
+                                await websocket.send_text(json.dumps({
+                                    "type": "bot_response_chunk",
+                                    "content": partial_response,
+                                    "role": "assistant"
+                                }))
+
+                        # Send bot response end indicator
+                        await websocket.send_text(json.dumps({
+                            "type": "bot_response_end",
+                            "role": "assistant"
+                        }))
                     
                     # Generate topic if this was the first user message and no topic exists yet
                     try:

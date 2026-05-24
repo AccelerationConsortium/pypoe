@@ -461,23 +461,46 @@ class PoeChatClient:
         await self._ensure_history_initialized()
         await self.history.delete_conversation(conversation_id)
 
-    async def create_conversation(self, title: str, bot_name: str, chat_mode: str = "chatbot", topic: str = None) -> str:
+    async def create_conversation(
+        self,
+        title: str,
+        bot_name: str,
+        chat_mode: str = "chatbot",
+        topic: str = None,
+        bot_names: Optional[List[str]] = None,
+        bot_assignments: Optional[Dict[str, Dict[str, Any]]] = None,
+        debate_topic: Optional[str] = None,
+    ) -> str:
         """
         Create a new conversation with optional topic.
-        
+
         Args:
             title: The conversation title
-            bot_name: The bot name for this conversation
+            bot_name: The (primary) bot name for this conversation
             chat_mode: The chat mode (chatbot, group, debate)
             topic: Optional topic for the conversation
-            
+            bot_names: Required for chat_mode in ('group','debate'); the
+                ordered participant list (2-3 entries). Ignored otherwise.
+            bot_assignments: Required for chat_mode='debate'; maps each
+                participant to its assigned stance.
+            debate_topic: Required for chat_mode='debate'; the pinned
+                topic prepended to every model's system prompt.
+
         Returns:
             The conversation ID
         """
         if not self.enable_history:
             raise ValueError("History is not enabled")
         await self._ensure_history_initialized()
-        return await self.history.create_conversation(title, bot_name, chat_mode, topic)
+        return await self.history.create_conversation(
+            title=title,
+            bot_name=bot_name,
+            chat_mode=chat_mode,
+            topic=topic,
+            bot_names=bot_names,
+            bot_assignments=bot_assignments,
+            debate_topic=debate_topic,
+        )
 
     async def generate_topic_from_message(self, first_message: str, bot_name: str = DEFAULT_CHAT_MODEL) -> str:
         """

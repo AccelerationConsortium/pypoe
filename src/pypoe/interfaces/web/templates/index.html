@@ -50,11 +50,19 @@
                 {% for conversation in conversations %}
                 <div class="conversation-item" data-id="{{ conversation.id }}">
                     <div class="conversation-info">
-                        <h4>{{ conversation.topic or conversation.title }}</h4>
-                        <p><i class="fas fa-robot"></i> {{ conversation.bot_name }}</p>
-                        <small>{{ conversation.created_at }}</small>
+                        <div class="conv-topic">{{ conversation.topic or conversation.title or 'Untitled' }}</div>
+                        <div class="conv-meta">
+                            <span class="conv-models">
+                                {%- if conversation.bot_names -%}
+                                    {{ conversation.bot_names | join(' · ') }}
+                                {%- else -%}
+                                    {{ conversation.bot_name }}
+                                {%- endif -%}
+                            </span>
+                            <span class="conv-time">{{ conversation.updated_at or conversation.created_at }}</span>
+                        </div>
                     </div>
-                    <button class="delete-btn" data-id="{{ conversation.id }}">
+                    <button class="delete-btn" data-id="{{ conversation.id }}" title="Delete">
                         <i class="fas fa-trash"></i>
                     </button>
                 </div>
@@ -162,13 +170,35 @@
                         <option value="debate">AI Debate - Two AIs debate a topic</option>
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group" id="single-bot-group">
                     <label for="chat-bot">AI Bot:</label>
-                    <select id="chat-bot" name="bot_name" required>
+                    <select id="chat-bot" name="bot_name">
                         {% for bot in available_bots %}
                         <option value="{{ bot }}">{{ bot }}</option>
                         {% endfor %}
                     </select>
+                </div>
+                <div class="form-group hidden" id="multi-bot-group">
+                    <label>Participants <small id="multi-bot-counter">(pick exactly 2)</small>:</label>
+                    <div class="multi-bot-list" id="multi-bot-list">
+                        {% for bot in available_bots %}
+                        <label class="multi-bot-option">
+                            <input type="checkbox" name="bot_names" value="{{ bot }}">
+                            <span>{{ bot }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="form-group hidden" id="debate-topic-group">
+                    <label for="debate-topic">Debate topic:</label>
+                    <textarea id="debate-topic" name="debate_topic" rows="3"
+                              placeholder="What's being debated? Pinned to every turn's system prompt."></textarea>
+                </div>
+                <div class="form-group hidden" id="debate-roles-group">
+                    <label>Roles <small>(one per participant)</small>:</label>
+                    <div class="debate-roles" id="debate-roles">
+                        <p class="muted">Pick participants above first.</p>
+                    </div>
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" id="cancel-btn">Cancel</button>

@@ -7,6 +7,12 @@ class PyPoeApp {
         this.currentConversation = null;
         this.streamingContent = '';
         this.messageTimeout = null;
+
+        // Group/debate fan-out state. Reset on every user_message frame.
+        this.currentGroupRow = null;          // DOM element wrapping the row of columns
+        this.currentGroupColumns = {};        // model_name -> column DOM element
+        this.currentGroupContent = {};        // model_name -> accumulated text
+        this.pendingGroupColumns = new Set(); // model_names with start but no end
         
         this.initializeElements();
         this.bindEvents();
@@ -133,9 +139,41 @@ class PyPoeApp {
         }
     }
     
+    _formatConvTime(value) {
+        if (!value) return '';
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return value;
+        return d.toLocaleString([], {
+            month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+        });
+    }
+
+    _conversationItemHtml(conv) {
+        const topic = conv.topic ? this.escapeHtml(conv.topic) : this.escapeHtml(conv.title || 'Untitled');
+        const models = Array.isArray(conv.bot_names) && conv.bot_names.length
+            ? conv.bot_names.map(b => this.escapeHtml(b)).join(' · ')
+            : this.escapeHtml(conv.bot_name || '');
+        const time = this._formatConvTime(conv.updated_at || conv.created_at);
+        return `
+            <div class="conversation-item" data-id="${conv.id}">
+                <div class="conversation-info">
+                    <div class="conv-topic">${topic}</div>
+                    <div class="conv-meta">
+                        <span class="conv-models" title="${models}">${models}</span>
+                        <span class="conv-time">${time}</span>
+                    </div>
+                </div>
+                <button class="delete-btn" data-id="${conv.id}" title="Delete">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
+        `;
+    }
+
     renderConversationsSidebar() {
         if (!this.conversationsList) return;
-        
+
         if (this.conversations.length === 0) {
             this.conversationsList.innerHTML = `
                 <div class="empty-conversations">
@@ -145,19 +183,10 @@ class PyPoeApp {
             `;
             return;
         }
-        
-        this.conversationsList.innerHTML = this.conversations.map(conv => `
-            <div class="conversation-item" data-id="${conv.id}">
-                <div class="conversation-info">
-                    <h4>${conv.topic ? this.escapeHtml(conv.topic) : this.escapeHtml(conv.title)}</h4>
-                    <p><i class="fas fa-robot"></i> ${this.escapeHtml(conv.bot_name)}</p>
-                    <small>${conv.created_at}</small>
-                </div>
-                <button class="delete-btn" data-id="${conv.id}">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </div>
-        `).join('');
+
+        this.conversationsList.innerHTML = this.conversations
+            .map(conv => this._conversationItemHtml(conv))
+            .join('');
         
         // Bind conversation events
         this.bindConversationEvents();
@@ -215,17 +244,101 @@ class PyPoeApp {
         try {
             const response = await fetch(`/api/conversation/${conversationId}/messages`);
             const messages = await response.json();
-            
+
             this.messagesContainer.innerHTML = '';
-            
-            // Add messages without individual scrolling
-            messages.forEach(msg => {
-                this.addMessageToDOM(msg.content, msg.role, false, {
-                    bot_name: msg.bot_name,
-                    timestamp: msg.timestamp
+
+            // For debate conversations, pin a topic + roles banner at the
+            // top of the chat. The banner is editable and PATCHes the
+            // conversation on save.
+            if (this.currentConversation?.chat_mode === 'debate') {
+                this.messagesContainer.appendChild(this._renderDebateBanner());
+            }
+
+            // For group/debate conversations, lay every turn out as a row
+            // with one column for the user and one column per model. A
+            // user message opens a new row with pre-created placeholders;
+            // following assistant messages fill those placeholders.
+            const multi = this._isMultiMode();
+            const bots = this.currentConversation?.bot_names || [];
+            let openRow = null;
+            let userCell = null;
+            let openBotCells = {};  // model_name -> placeholder DOM node
+
+            const newRow = () => {
+                const row = document.createElement('div');
+                row.className = 'turn-row multi with-user';
+                row.style.setProperty('--bot-count', String(bots.length));
+
+                const u = document.createElement('div');
+                u.className = 'message user group-user-cell placeholder';
+                row.appendChild(u);
+                userCell = u;
+
+                openBotCells = {};
+                bots.forEach(bot => {
+                    const ph = document.createElement('div');
+                    ph.className = 'message assistant group-column placeholder';
+                    ph.dataset.model = bot;
+                    row.appendChild(ph);
+                    openBotCells[bot] = ph;
                 });
-            });
-            
+
+                this.messagesContainer.appendChild(row);
+                return row;
+            };
+
+            const fillUserCell = (msg) => {
+                userCell.classList.remove('placeholder');
+                userCell.innerHTML = '';
+                const avatar = document.createElement('div');
+                avatar.className = 'message-avatar';
+                avatar.innerHTML = '<i class="fas fa-user"></i>';
+                const wrapper = document.createElement('div');
+                wrapper.className = 'message-wrapper';
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'message-content';
+                const processed = this.processContentForDisplay(msg.content);
+                if (processed !== msg.content) {
+                    contentDiv.innerHTML = processed;
+                } else {
+                    contentDiv.textContent = msg.content;
+                }
+                wrapper.appendChild(contentDiv);
+                if (msg.timestamp) {
+                    const meta = document.createElement('div');
+                    meta.className = 'message-metadata user-metadata';
+                    meta.innerHTML = `<span class="timestamp">${this.formatTime(msg.timestamp)}</span>`;
+                    wrapper.appendChild(meta);
+                }
+                userCell.appendChild(avatar);
+                userCell.appendChild(wrapper);
+            };
+
+            for (const msg of messages) {
+                if (multi && msg.role === 'user') {
+                    openRow = newRow();
+                    fillUserCell(msg);
+                } else if (multi && msg.role === 'assistant' && msg.model_name) {
+                    if (!openRow) openRow = newRow();
+                    const placeholder = openBotCells[msg.model_name];
+                    const col = this._buildGroupColumn(msg.model_name, msg.content, false);
+                    if (placeholder) {
+                        placeholder.replaceWith(col);
+                        openBotCells[msg.model_name] = col;
+                    } else {
+                        // Unknown bot in history (config drift?); append.
+                        openRow.appendChild(col);
+                    }
+                } else {
+                    // Chatbot mode (or legacy rows) — flat layout.
+                    openRow = null;
+                    this.addMessageToDOM(msg.content, msg.role, false, {
+                        bot_name: msg.model_name || msg.bot_name,
+                        timestamp: msg.timestamp,
+                    });
+                }
+            }
+
             // Scroll to bottom once after all messages are loaded
             requestAnimationFrame(() => {
                 this.scrollToBottom();
@@ -309,17 +422,36 @@ class PyPoeApp {
     handleWebSocketMessage(data) {
         switch (data.type) {
             case 'user_message':
-                this.addMessage(data.content, 'user', false);
+                // A new user message starts a new group/debate round. Reset
+                // round state first so the row created for this turn lives
+                // in a fresh container.
+                this.currentGroupRow = null;
+                this.currentGroupColumns = {};
+                this.currentGroupContent = {};
+                this.pendingGroupColumns = new Set();
+                if (this._isMultiMode()) {
+                    this._addUserToGroupRow(data.content, {
+                        timestamp: new Date().toISOString(),
+                    });
+                } else {
+                    this.addMessage(data.content, 'user', false);
+                }
                 break;
             case 'bot_response_start':
-                this.currentBotMessage = this.addMessage('', 'assistant', true);
-                this.streamingContent = ''; // Track streaming content
-                this.isShowingThinking = false; // Track if we're showing thinking message
+                if (data.model_name) {
+                    this._beginGroupColumn(data.model_name);
+                } else {
+                    this.currentBotMessage = this.addMessage('', 'assistant', true);
+                    this.streamingContent = ''; // Track streaming content
+                    this.isShowingThinking = false; // Track if we're showing thinking message
+                }
                 break;
             case 'bot_response_chunk':
-                if (this.currentBotMessage && data.content) {
+                if (data.model_name) {
+                    this._appendGroupChunk(data.model_name, data.content);
+                } else if (this.currentBotMessage && data.content) {
                     const contentDiv = this.currentBotMessage.querySelector('.message-content');
-                    
+
                     // Check if this chunk is a thinking/generating message
                     if (this.isThinkingMessage(data.content)) {
                         // Show thinking message temporarily (only if we haven't shown real content yet)
@@ -329,29 +461,29 @@ class PyPoeApp {
                             if (typingIndicator) {
                                 typingIndicator.remove();
                             }
-                            
+
                             contentDiv.textContent = data.content;
                             this.isShowingThinking = true;
                             this.scrollToBottom();
                         }
                         return; // Don't accumulate thinking messages
                     }
-                    
+
                     // Real content arrived - replace thinking message if showing
                     if (this.isShowingThinking) {
                         this.streamingContent = ''; // Reset accumulated content
                         this.isShowingThinking = false;
                     }
-                    
+
                     // Accumulate real content
                     this.streamingContent += data.content;
-                    
+
                     // Remove typing indicator if present
                     const typingIndicator = contentDiv.querySelector('.typing-indicator');
                     if (typingIndicator) {
                         typingIndicator.remove();
                     }
-                    
+
                     // Update content with processed display
                     const processedContent = this.processContentForDisplay(this.streamingContent);
                     if (processedContent !== this.streamingContent) {
@@ -359,29 +491,54 @@ class PyPoeApp {
                     } else {
                         contentDiv.textContent = this.streamingContent;
                     }
-                    
+
                     this.scrollToBottom();
                 }
                 break;
             case 'bot_response_end':
-                // Final processing of complete message
-                if (this.currentBotMessage && this.streamingContent) {
-                    const contentDiv = this.currentBotMessage.querySelector('.message-content');
-                    const processedContent = this.processContentForDisplay(this.streamingContent);
-                    if (processedContent !== this.streamingContent) {
-                        contentDiv.innerHTML = processedContent;
-                    } else {
-                        contentDiv.textContent = this.streamingContent;
+                if (data.model_name) {
+                    this._endGroupColumn(data.model_name);
+                    // Re-enable input once every column in this round has ended.
+                    if (this.pendingGroupColumns.size === 0) {
+                        this.enableInput();
                     }
+                } else {
+                    // Final processing of complete message
+                    if (this.currentBotMessage && this.streamingContent) {
+                        const contentDiv = this.currentBotMessage.querySelector('.message-content');
+                        const processedContent = this.processContentForDisplay(this.streamingContent);
+                        if (processedContent !== this.streamingContent) {
+                            contentDiv.innerHTML = processedContent;
+                        } else {
+                            contentDiv.textContent = this.streamingContent;
+                        }
+                    }
+                    this.currentBotMessage = null;
+                    this.streamingContent = '';
+                    this.enableInput();
                 }
-                this.currentBotMessage = null;
-                this.streamingContent = '';
-                this.enableInput();
                 break;
             case 'error':
-                this.addMessage(data.content, 'error', false);
-                // Re-enable input on error responses
-                this.enableInput();
+                if (data.model_name) {
+                    // Surface the error inside the column that produced it,
+                    // so the rest of the round keeps streaming.
+                    const column = this.currentGroupColumns[data.model_name];
+                    if (column) {
+                        const contentDiv = column.querySelector('.message-content');
+                        const typingIndicator = contentDiv.querySelector('.typing-indicator');
+                        if (typingIndicator) typingIndicator.remove();
+                        const err = document.createElement('div');
+                        err.className = 'group-column-error';
+                        err.textContent = '❌ ' + (data.content || 'Error');
+                        contentDiv.appendChild(err);
+                    } else {
+                        this.addMessage(`❌ ${data.model_name}: ${data.content}`, 'error', false);
+                    }
+                } else {
+                    this.addMessage(data.content, 'error', false);
+                    // Re-enable input on error responses
+                    this.enableInput();
+                }
                 break;
             case 'topic_updated':
                 // Update the conversation topic in the UI
@@ -498,6 +655,300 @@ class PyPoeApp {
             bot_name: role === 'assistant' ? (this.currentConversation?.bot_name || this.globalBotSelect?.value) : null,
             timestamp: new Date().toISOString()
         });
+    }
+
+    _isMultiMode() {
+        const mode = this.currentConversation?.chat_mode;
+        return mode === 'group' || mode === 'debate';
+    }
+
+    _ensureGroupRow() {
+        if (this.currentGroupRow) return this.currentGroupRow;
+        const row = document.createElement('div');
+        row.className = 'turn-row multi with-user';
+        const bots = this.currentConversation?.bot_names || [];
+        row.style.setProperty('--bot-count', String(bots.length));
+
+        // Pre-create the user cell + one placeholder per bot in
+        // ``bot_names`` order. Concurrent ``bot_response_start`` frames
+        // fill these placeholders in deterministic positions, so column
+        // order is stable across runs.
+        const userCell = document.createElement('div');
+        userCell.className = 'message user group-user-cell placeholder';
+        row.appendChild(userCell);
+        this.currentGroupUserCell = userCell;
+
+        bots.forEach(bot => {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'message assistant group-column placeholder';
+            placeholder.dataset.model = bot;
+            row.appendChild(placeholder);
+            this.currentGroupColumns[bot] = placeholder;
+        });
+
+        this.messagesContainer.appendChild(row);
+        this.currentGroupRow = row;
+        return row;
+    }
+
+    _addUserToGroupRow(content, metadata = {}) {
+        this._ensureGroupRow();
+        const cell = this.currentGroupUserCell;
+        cell.classList.remove('placeholder');
+        cell.innerHTML = '';
+
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        avatar.innerHTML = '<i class="fas fa-user"></i>';
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message-wrapper';
+
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        const processed = this.processContentForDisplay(content);
+        if (processed !== content) {
+            contentDiv.innerHTML = processed;
+        } else {
+            contentDiv.textContent = content;
+        }
+        wrapper.appendChild(contentDiv);
+        if (metadata.timestamp) {
+            const meta = document.createElement('div');
+            meta.className = 'message-metadata user-metadata';
+            meta.innerHTML = `<span class="timestamp">${this.formatTime(metadata.timestamp)}</span>`;
+            wrapper.appendChild(meta);
+        }
+
+        cell.appendChild(avatar);
+        cell.appendChild(wrapper);
+        this.scrollToBottom();
+        return cell;
+    }
+
+    _beginGroupColumn(modelName) {
+        this._ensureGroupRow();
+        const placeholder = this.currentGroupColumns[modelName];
+        if (!placeholder) {
+            // Defensive: backend streamed a bot we didn't expect. Drop it
+            // into a fresh column at the end of the row.
+            const fallback = this._buildGroupColumn(modelName, '', true);
+            this.currentGroupRow.appendChild(fallback);
+            this.currentGroupColumns[modelName] = fallback;
+        } else {
+            // Replace the placeholder in-place to preserve column order.
+            const built = this._buildGroupColumn(modelName, '', true);
+            placeholder.replaceWith(built);
+            this.currentGroupColumns[modelName] = built;
+        }
+        this.currentGroupContent[modelName] = '';
+        this.pendingGroupColumns.add(modelName);
+        this.scrollToBottom();
+    }
+
+    _appendGroupChunk(modelName, content) {
+        if (!content) return;
+        const column = this.currentGroupColumns[modelName];
+        if (!column) return;
+        if (this.isThinkingMessage(content)) {
+            // Treat thinking chunks the same way the single-bot path does:
+            // show them only while no real content has arrived yet.
+            if (!this.currentGroupContent[modelName]) {
+                const contentDiv = column.querySelector('.message-content');
+                const typingIndicator = contentDiv.querySelector('.typing-indicator');
+                if (typingIndicator) typingIndicator.remove();
+                contentDiv.textContent = content;
+                this.scrollToBottom();
+            }
+            return;
+        }
+        this.currentGroupContent[modelName] += content;
+        const contentDiv = column.querySelector('.message-content');
+        const typingIndicator = contentDiv.querySelector('.typing-indicator');
+        if (typingIndicator) typingIndicator.remove();
+        const accumulated = this.currentGroupContent[modelName];
+        const processed = this.processContentForDisplay(accumulated);
+        if (processed !== accumulated) {
+            contentDiv.innerHTML = processed;
+        } else {
+            contentDiv.textContent = accumulated;
+        }
+        this.scrollToBottom();
+    }
+
+    _endGroupColumn(modelName) {
+        const column = this.currentGroupColumns[modelName];
+        if (column) {
+            const contentDiv = column.querySelector('.message-content');
+            const typingIndicator = contentDiv.querySelector('.typing-indicator');
+            if (typingIndicator) typingIndicator.remove();
+            const accumulated = this.currentGroupContent[modelName] || '';
+            if (accumulated) {
+                const processed = this.processContentForDisplay(accumulated);
+                if (processed !== accumulated) {
+                    contentDiv.innerHTML = processed;
+                } else {
+                    contentDiv.textContent = accumulated;
+                }
+            }
+        }
+        this.pendingGroupColumns.delete(modelName);
+    }
+
+    _renderDebateBanner() {
+        // Build a pinned banner showing the debate topic + per-bot roles,
+        // with an inline edit affordance for the topic. The banner sits at
+        // the top of messages-container and scrolls with the chat (v1).
+        const conv = this.currentConversation;
+        const banner = document.createElement('div');
+        banner.className = 'debate-banner';
+
+        const heading = document.createElement('div');
+        heading.className = 'debate-banner-heading';
+        heading.innerHTML = '<i class="fas fa-bullhorn"></i> Debate topic';
+        banner.appendChild(heading);
+
+        const view = document.createElement('div');
+        view.className = 'debate-banner-view';
+        const topicPara = document.createElement('p');
+        topicPara.className = 'debate-banner-topic';
+        topicPara.textContent = conv?.debate_topic || '(no topic set)';
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn btn-secondary btn-small';
+        editBtn.innerHTML = '<i class="fas fa-pen"></i> Edit topic';
+        view.appendChild(topicPara);
+        view.appendChild(editBtn);
+        banner.appendChild(view);
+
+        const editor = document.createElement('div');
+        editor.className = 'debate-banner-editor hidden';
+        const textarea = document.createElement('textarea');
+        textarea.rows = 3;
+        textarea.value = conv?.debate_topic || '';
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.className = 'btn btn-primary btn-small';
+        saveBtn.textContent = 'Save';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn btn-secondary btn-small';
+        cancelBtn.textContent = 'Cancel';
+        editor.appendChild(textarea);
+        const editorActions = document.createElement('div');
+        editorActions.className = 'debate-banner-editor-actions';
+        editorActions.appendChild(saveBtn);
+        editorActions.appendChild(cancelBtn);
+        editor.appendChild(editorActions);
+        banner.appendChild(editor);
+
+        editBtn.addEventListener('click', () => {
+            view.classList.add('hidden');
+            editor.classList.remove('hidden');
+            textarea.focus();
+        });
+        cancelBtn.addEventListener('click', () => {
+            textarea.value = conv?.debate_topic || '';
+            editor.classList.add('hidden');
+            view.classList.remove('hidden');
+        });
+        saveBtn.addEventListener('click', async () => {
+            const next = textarea.value.trim();
+            if (!next) {
+                alert('Topic cannot be empty.');
+                return;
+            }
+            saveBtn.disabled = true;
+            try {
+                const resp = await fetch(`/api/conversation/${conv.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ debate_topic: next }),
+                });
+                const result = await resp.json();
+                if (!resp.ok) {
+                    alert(`Update failed: ${result?.detail || resp.statusText}`);
+                    return;
+                }
+                // Update local state and rerender just the view band.
+                conv.debate_topic = result.debate_topic;
+                topicPara.textContent = result.debate_topic;
+                editor.classList.add('hidden');
+                view.classList.remove('hidden');
+            } finally {
+                saveBtn.disabled = false;
+            }
+        });
+
+        // Roles summary row — read-only in this version; the New Chat modal
+        // is the editor for assignments.
+        const rolesRow = document.createElement('div');
+        rolesRow.className = 'debate-banner-roles';
+        const assignments = conv?.bot_assignments || {};
+        (conv?.bot_names || []).forEach(bot => {
+            const pill = document.createElement('span');
+            pill.className = 'debate-role-pill';
+            const a = assignments[bot] || {};
+            const role = a.role === 'custom' ? (a.custom_label || 'custom') : (a.role || 'unassigned').replace(/_/g, ' ');
+            pill.textContent = `${bot} · ${role}`;
+            rolesRow.appendChild(pill);
+        });
+        banner.appendChild(rolesRow);
+
+        return banner;
+    }
+
+    _getRoleLabel(modelName) {
+        // Human-readable role string for column headers. Empty when not in
+        // debate mode or when the model has no assignment recorded.
+        const assignments = this.currentConversation?.bot_assignments;
+        if (!assignments) return '';
+        const a = assignments[modelName];
+        if (!a) return '';
+        if (a.role === 'custom') return a.custom_label || 'custom';
+        return a.role.replace(/_/g, ' ');
+    }
+
+    _buildGroupColumn(modelName, content, streaming = false) {
+        // Mirrors addMessageToDOM but tagged for the column grid layout.
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message assistant group-column';
+        wrapper.dataset.model = modelName;
+
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        avatar.innerHTML = '<i class="fas fa-robot"></i>';
+
+        const contentWrapper = document.createElement('div');
+        contentWrapper.className = 'message-wrapper';
+
+        const header = document.createElement('div');
+        header.className = 'group-column-header';
+        const roleLabel = this._getRoleLabel(modelName);
+        header.textContent = roleLabel ? `${modelName} — ${roleLabel}` : modelName;
+        contentWrapper.appendChild(header);
+
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        if (content) {
+            const processed = this.processContentForDisplay(content);
+            if (processed !== content) {
+                contentDiv.innerHTML = processed;
+            } else {
+                contentDiv.textContent = content;
+            }
+        }
+        if (streaming) {
+            const typing = document.createElement('div');
+            typing.className = 'typing-indicator';
+            typing.innerHTML = '<span>Thinking</span><div class="typing-dots"><span></span><span></span><span></span></div>';
+            contentDiv.appendChild(typing);
+        }
+        contentWrapper.appendChild(contentDiv);
+
+        wrapper.appendChild(avatar);
+        wrapper.appendChild(contentWrapper);
+        return wrapper;
     }
 
     formatTime(timestamp) {
@@ -690,18 +1141,9 @@ class PyPoeApp {
             return;
         }
         
-        this.conversationsList.innerHTML = filteredConversations.map(conv => `
-            <div class="conversation-item" data-id="${conv.id}">
-                <div class="conversation-info">
-                    <h4>${conv.topic ? this.escapeHtml(conv.topic) : this.escapeHtml(conv.title)}</h4>
-                    <p><i class="fas fa-robot"></i> ${this.escapeHtml(conv.bot_name)}</p>
-                    <small>${conv.created_at}</small>
-                </div>
-                <button class="delete-btn" data-id="${conv.id}">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </div>
-        `).join('');
+        this.conversationsList.innerHTML = filteredConversations
+            .map(conv => this._conversationItemHtml(conv))
+            .join('');
         
         // Re-bind events for filtered conversations
         this.bindConversationEvents();
@@ -877,25 +1319,52 @@ class PyPoeApp {
     
     processContentForDisplay(content) {
         if (!content) return content;
-        
+
         let processedContent = this.escapeHtml(content);
-        
+
         // Convert videos first (more specific pattern)
         const videoPattern = /!\[([^\]]*)\]\(([^)]*\.(?:mp4|mov|avi|webm|mkv|flv)[^)]*)\)/gi;
         processedContent = processedContent.replace(videoPattern, (match, altText, url) => {
             const displayText = altText || 'Generated Video';
             return `<video controls style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" poster="" preload="metadata"><source src="${url}" type="video/mp4">Your browser does not support the video tag. <a href="${url}" target="_blank" class="video-fallback-link" style="color: #3498db; text-decoration: none;">🎬 ${displayText} (Click to open)</a></video>`;
         });
-        
+
         // Convert images (excluding videos that were already processed)
         const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
-        return processedContent.replace(imagePattern, (match, altText, url) => {
+        processedContent = processedContent.replace(imagePattern, (match, altText, url) => {
             const displayText = altText || 'Generated Image';
             // Skip if this looks like a video URL that should have been caught by video pattern
             if (/\.(mp4|mov|avi|webm|mkv|flv)/i.test(url)) {
                 return match; // Return original text
             }
             return `<img src="${url}" alt="${displayText}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; display: block;" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';" /><a href="${url}" target="_blank" class="image-fallback-link" style="display: none; color: #3498db; text-decoration: none;">🖼️ ${displayText} (Click to open)</a>`;
+        });
+
+        // Fold model reasoning into a collapsed <details>. This catches
+        // `*Thinking...*` (or `**Thinking...**`) followed by one or more
+        // blockquote lines (`> …`, which is `&gt;` after escapeHtml).
+        return this._wrapThinkingBlocks(processedContent);
+    }
+
+    _wrapThinkingBlocks(html) {
+        if (!html) return html;
+        // The content has already been HTML-escaped, so `>` is `&gt;`.
+        // Match the header + the contiguous block of `&gt;`-prefixed lines,
+        // tolerating any blank lines in between.
+        const pattern = /(\*+Thinking\.\.\.?\*+)[ \t]*(?:\n[ \t]*)*((?:&gt;[^\n]*(?:\n|$))+)/g;
+        return html.replace(pattern, (_match, _header, blockquote) => {
+            // Strip the leading `&gt; ` from each line so the folded body
+            // reads as normal paragraphs.
+            const stripped = blockquote
+                .replace(/^&gt;[ \t]?/gm, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+            return (
+                '<details class="thinking-block">'
+                + '<summary>💭 Reasoning</summary>'
+                + '<div class="thinking-content">' + stripped + '</div>'
+                + '</details>'
+            );
         });
     }
     
@@ -937,18 +1406,174 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
     
+    // Toggle the single-bot dropdown vs. the multi-bot checkbox list based
+    // on the chosen chat mode. Defined here so it's reachable from both the
+    // mode-change handler and the modal-open handler.
+    const chatModeSelect = document.getElementById('chat-mode');
+    const singleBotGroup = document.getElementById('single-bot-group');
+    const multiBotGroup = document.getElementById('multi-bot-group');
+    const multiBotList = document.getElementById('multi-bot-list');
+    const multiBotCounter = document.getElementById('multi-bot-counter');
+    const debateTopicGroup = document.getElementById('debate-topic-group');
+    const debateTopicInput = document.getElementById('debate-topic');
+    const debateRolesGroup = document.getElementById('debate-roles-group');
+    const debateRolesContainer = document.getElementById('debate-roles');
+
+    // Keep in sync with DEBATE_ROLE_PRESETS in src/pypoe/interfaces/web/app.py.
+    const DEBATE_ROLE_OPTIONS = [
+        { value: 'defend',            label: 'Defend' },
+        { value: 'critique',          label: 'Critique' },
+        { value: 'steelman_opposite', label: 'Steelman opposite' },
+        { value: 'devils_advocate',   label: "Devil's advocate" },
+        { value: 'synthesizer',       label: 'Synthesizer' },
+        { value: 'custom',            label: 'Custom…' },
+    ];
+
+    const renderDebateRoles = () => {
+        if (!debateRolesContainer) return;
+        const mode = chatModeSelect?.value || 'chatbot';
+        if (mode !== 'debate') return;
+
+        const checked = multiBotList
+            ? Array.from(multiBotList.querySelectorAll('input[type="checkbox"]:checked'))
+                .map(cb => cb.value)
+            : [];
+        if (checked.length === 0) {
+            debateRolesContainer.innerHTML = '<p class="muted">Pick participants above first.</p>';
+            return;
+        }
+        // Preserve any role/label the user already picked when they tick or
+        // untick a participant.
+        const prior = {};
+        debateRolesContainer.querySelectorAll('.debate-role-row').forEach(row => {
+            prior[row.dataset.bot] = {
+                role: row.querySelector('select')?.value,
+                label: row.querySelector('input[type="text"]')?.value || '',
+            };
+        });
+        debateRolesContainer.innerHTML = '';
+        checked.forEach(bot => {
+            const row = document.createElement('div');
+            row.className = 'debate-role-row';
+            row.dataset.bot = bot;
+            const label = document.createElement('label');
+            label.className = 'debate-role-bot';
+            label.textContent = bot;
+            const select = document.createElement('select');
+            DEBATE_ROLE_OPTIONS.forEach(opt => {
+                const o = document.createElement('option');
+                o.value = opt.value;
+                o.textContent = opt.label;
+                select.appendChild(o);
+            });
+            select.value = prior[bot]?.role || 'defend';
+            const customInput = document.createElement('input');
+            customInput.type = 'text';
+            customInput.placeholder = 'custom role description';
+            customInput.value = prior[bot]?.label || '';
+            customInput.classList.toggle('hidden', select.value !== 'custom');
+            select.addEventListener('change', () => {
+                customInput.classList.toggle('hidden', select.value !== 'custom');
+            });
+            row.appendChild(label);
+            row.appendChild(select);
+            row.appendChild(customInput);
+            debateRolesContainer.appendChild(row);
+        });
+    };
+
+    const updateMultiBotCounter = () => {
+        if (!multiBotList || !multiBotCounter) return;
+        const checked = multiBotList.querySelectorAll('input[type="checkbox"]:checked');
+        multiBotCounter.textContent = `(${checked.length}/2 — pick exactly 2)`;
+        // Cap selection at 2.
+        const allBoxes = multiBotList.querySelectorAll('input[type="checkbox"]');
+        const limitReached = checked.length >= 2;
+        allBoxes.forEach(cb => { if (!cb.checked) cb.disabled = limitReached; });
+        renderDebateRoles();
+    };
+
+    const syncModeUI = () => {
+        const mode = chatModeSelect?.value || 'chatbot';
+        const isMulti = mode === 'group' || mode === 'debate';
+        const isDebate = mode === 'debate';
+        if (singleBotGroup) singleBotGroup.classList.toggle('hidden', isMulti);
+        if (multiBotGroup) multiBotGroup.classList.toggle('hidden', !isMulti);
+        if (debateTopicGroup) debateTopicGroup.classList.toggle('hidden', !isDebate);
+        if (debateRolesGroup) debateRolesGroup.classList.toggle('hidden', !isDebate);
+        if (!isMulti && multiBotList) {
+            multiBotList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+                cb.disabled = false;
+            });
+        }
+        updateMultiBotCounter();
+    };
+
+    if (chatModeSelect) chatModeSelect.addEventListener('change', syncModeUI);
+    if (multiBotList) multiBotList.addEventListener('change', updateMultiBotCounter);
+    // Ensure the form starts in a coherent state.
+    syncModeUI();
+
     if (newChatForm) {
         newChatForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
-            
-            // Convert FormData to JSON for better handling
+            const mode = formData.get('chat_mode') || 'chatbot';
+            const isMulti = mode === 'group' || mode === 'debate';
+
             const data = {
                 title: formData.get('title'),
-                bot_name: formData.get('bot_name'),
-                chat_mode: formData.get('chat_mode') || 'chatbot'
+                chat_mode: mode,
             };
-            
+
+            if (isMulti) {
+                const botNames = formData.getAll('bot_names');
+                if (botNames.length !== 2) {
+                    alert(`${mode === 'group' ? 'Group chat' : 'Debate'} needs exactly 2 participants — currently picked ${botNames.length}.`);
+                    return;
+                }
+                data.bot_names = botNames;
+                data.bot_name = botNames[0]; // primary; required by the API schema
+
+                if (mode === 'debate') {
+                    const topic = (formData.get('debate_topic') || '').toString().trim();
+                    if (!topic) {
+                        alert('Debate mode needs a topic.');
+                        return;
+                    }
+                    data.debate_topic = topic;
+
+                    const assignments = {};
+                    let assignmentError = null;
+                    if (debateRolesContainer) {
+                        debateRolesContainer.querySelectorAll('.debate-role-row').forEach(row => {
+                            const bot = row.dataset.bot;
+                            const role = row.querySelector('select')?.value || 'defend';
+                            const customInput = row.querySelector('input[type="text"]');
+                            const customLabel = customInput?.value?.trim() || '';
+                            if (role === 'custom' && !customLabel) {
+                                assignmentError = `Custom role for "${bot}" needs a description.`;
+                            }
+                            assignments[bot] = role === 'custom'
+                                ? { role, custom_label: customLabel }
+                                : { role };
+                        });
+                    }
+                    if (assignmentError) {
+                        alert(assignmentError);
+                        return;
+                    }
+                    if (Object.keys(assignments).length !== botNames.length) {
+                        alert('Every selected participant needs a role.');
+                        return;
+                    }
+                    data.bot_assignments = assignments;
+                }
+            } else {
+                data.bot_name = formData.get('bot_name');
+            }
+
             try {
                 const response = await fetch('/api/conversation/new', {
                     method: 'POST',
@@ -957,15 +1582,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     },
                     body: JSON.stringify(data)
                 });
-                
+
                 const result = await response.json();
+                if (!response.ok) {
+                    alert(`Could not create conversation: ${result?.detail || response.statusText}`);
+                    return;
+                }
                 if (result.conversation_id) {
                     newChatModal.style.display = 'none';
                     newChatForm.reset();
-                    
+                    syncModeUI();
+
                     // Add a small delay to ensure conversation is fully saved
                     await new Promise(resolve => setTimeout(resolve, 500));
-                    
+
                     // Reload conversations and select the new one
                     await app.loadInitialData();
                     app.selectConversation(result.conversation_id);

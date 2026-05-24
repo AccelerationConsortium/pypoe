@@ -93,12 +93,15 @@ class HistoryManager:
                         title TEXT,
                         topic TEXT,
                         bot_name TEXT,
+                        bot_names TEXT,         -- JSON list, populated for chat_mode in ('group','debate')
+                        bot_assignments TEXT,   -- JSON dict (debate only): bot_name -> {role, custom_label}
+                        debate_topic TEXT,      -- shared topic pinned to every debate turn's system prompt
                         chat_mode TEXT DEFAULT 'chatbot',
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                
+
                 # Enhanced messages table
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS messages (
@@ -108,6 +111,7 @@ class HistoryManager:
                         content TEXT NOT NULL,
                         content_type TEXT DEFAULT 'text',  -- 'text', 'media', 'mixed'
                         media_data TEXT,  -- JSON for media metadata
+                        model_name TEXT,  -- which model produced this assistant row (NULL for user / legacy)
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY(conversation_id) REFERENCES conversations(id)
                     )
@@ -186,6 +190,27 @@ class HistoryManager:
                     "Added topic column to conversations table",
                 )
 
+            # Group/debate modes carry a JSON list of bot names (2-3 entries).
+            # NULL for chat_mode='chatbot' rows; populated otherwise.
+            if 'bot_names' not in conv_cols:
+                await _add_column(
+                    "ALTER TABLE conversations ADD COLUMN bot_names TEXT",
+                    "Added bot_names column to conversations table",
+                )
+
+            # Debate mode pins a topic and per-bot stance assignments.
+            if 'bot_assignments' not in conv_cols:
+                await _add_column(
+                    "ALTER TABLE conversations ADD COLUMN bot_assignments TEXT",
+                    "Added bot_assignments column to conversations table",
+                )
+
+            if 'debate_topic' not in conv_cols:
+                await _add_column(
+                    "ALTER TABLE conversations ADD COLUMN debate_topic TEXT",
+                    "Added debate_topic column to conversations table",
+                )
+
             msg_cols = await _column_names("messages")
 
             if 'content_type' not in msg_cols:
@@ -198,6 +223,14 @@ class HistoryManager:
                 await _add_column(
                     "ALTER TABLE messages ADD COLUMN media_data TEXT",
                     "Added media_data column to messages table",
+                )
+
+            # Attribute assistant rows to the specific model that produced
+            # them. NULL for user messages and legacy chatbot-mode rows.
+            if 'model_name' not in msg_cols:
+                await _add_column(
+                    "ALTER TABLE messages ADD COLUMN model_name TEXT",
+                    "Added model_name column to messages table",
                 )
 
             print("Database migration to enhanced schema completed")
@@ -321,6 +354,9 @@ class HistoryManager:
         chat_mode: str = "chatbot",
         topic: str = None,
         conversation_id: Optional[str] = None,
+        bot_names: Optional[List[str]] = None,
+        bot_assignments: Optional[Dict[str, Dict[str, Any]]] = None,
+        debate_topic: Optional[str] = None,
     ) -> str:
         """Creates a new conversation with enhanced metadata.
 
@@ -329,29 +365,90 @@ class HistoryManager:
         This lets callers like the Slack bot key conversations by stable,
         externally-meaningful ids (e.g. ``slack_thread_<chan>_<ts>``)
         instead of receiving a fresh UUID each call.
+
+        ``bot_names`` is the participant list for ``chat_mode`` in
+        ``{'group','debate'}``; stored as a JSON-encoded list and ignored
+        for ``'chatbot'``.
+
+        ``bot_assignments`` and ``debate_topic`` are required for
+        ``chat_mode='debate'`` and ignored otherwise; both are validated
+        upstream in the API layer.
         """
         conversation_id = conversation_id or str(uuid.uuid4())
+        bot_names_json = json.dumps(bot_names) if bot_names else None
+        bot_assignments_json = (
+            json.dumps(bot_assignments) if bot_assignments else None
+        )
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
                     "INSERT OR IGNORE INTO conversations "
-                    "(id, title, topic, bot_name, chat_mode) VALUES (?, ?, ?, ?, ?)",
-                    (conversation_id, title, topic, bot_name, chat_mode)
+                    "(id, title, topic, bot_name, bot_names, "
+                    " bot_assignments, debate_topic, chat_mode) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        conversation_id,
+                        title,
+                        topic,
+                        bot_name,
+                        bot_names_json,
+                        bot_assignments_json,
+                        debate_topic,
+                        chat_mode,
+                    ),
                 )
                 await db.commit()
         return conversation_id
+
+    async def update_conversation_debate_metadata(
+        self,
+        conversation_id: str,
+        *,
+        debate_topic: Optional[str] = None,
+        bot_assignments: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> None:
+        """Partial update for debate-only fields. ``None`` means 'leave alone'.
+
+        Used by the PATCH endpoint so the user can revise the pinned topic
+        or rebalance role assignments mid-debate. The next turn will reflect
+        whichever fields changed.
+        """
+        if debate_topic is None and bot_assignments is None:
+            return
+        async with self._lock:
+            async with aiosqlite.connect(self.db_path) as db:
+                if debate_topic is not None:
+                    await db.execute(
+                        "UPDATE conversations SET debate_topic = ?, "
+                        "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (debate_topic, conversation_id),
+                    )
+                if bot_assignments is not None:
+                    await db.execute(
+                        "UPDATE conversations SET bot_assignments = ?, "
+                        "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (json.dumps(bot_assignments), conversation_id),
+                    )
+                await db.commit()
 
     async def add_message(self,
                          conversation_id: str,
                          role: str,
                          content: str,
                          bot_name: Optional[str] = None,
-                         download_media: bool = True) -> int:
+                         download_media: bool = True,
+                         model_name: Optional[str] = None) -> int:
         """Adds a message, with optional media auto-download.
 
         Media detection and downloading are skipped when ``self.enable_media``
         is False (the default) or the caller passes ``download_media=False``.
         The raw text content is always persisted.
+
+        ``model_name`` attributes assistant rows to the model that produced
+        them (required for group/debate fan-out so the frontend can render
+        the row in the correct column). NULL for user messages and for
+        single-bot chatbot rows where attribution is already on the
+        conversation.
         """
 
         # Detect media content only when the instance is configured for it.
@@ -364,14 +461,15 @@ class HistoryManager:
             async with aiosqlite.connect(self.db_path) as db:
                 # Insert message
                 cursor = await db.execute("""
-                    INSERT INTO messages (conversation_id, role, content, content_type, media_data)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO messages (conversation_id, role, content, content_type, media_data, model_name)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 """, (
                     conversation_id,
                     role,
                     content,
                     media_info['content_type'],
-                    json.dumps(media_info) if media_info['has_media'] else None
+                    json.dumps(media_info) if media_info['has_media'] else None,
+                    model_name,
                 ))
 
                 message_id = cursor.lastrowid
@@ -423,23 +521,24 @@ class HistoryManager:
                 
                 # Get all messages
                 cursor = await db.execute("""
-                    SELECT m.id, m.role, m.content, m.content_type, m.media_data, m.timestamp
+                    SELECT m.id, m.role, m.content, m.content_type, m.media_data, m.model_name, m.timestamp
                     FROM messages m
                     WHERE m.conversation_id = ?
-                    ORDER BY m.timestamp ASC
+                    ORDER BY m.timestamp ASC, m.id ASC
                 """, (conversation_id,))
-                
+
                 rows = await cursor.fetchall()
                 messages = []
-                
+
                 for row in rows:
-                    message_id, role, content, content_type, media_data, timestamp = row
-                    
+                    message_id, role, content, content_type, media_data, model_name, timestamp = row
+
                     message = {
                         "role": role,
                         "content": content,
                         "content_type": content_type,
-                        "timestamp": timestamp
+                        "model_name": model_name,
+                        "timestamp": timestamp,
                     }
                     
                     # Add media metadata if requested
@@ -502,27 +601,51 @@ class HistoryManager:
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
                 cursor = await db.execute("""
-                    SELECT c.id, c.title, c.topic, c.bot_name, c.chat_mode, c.created_at, c.updated_at,
+                    SELECT c.id, c.title, c.topic, c.bot_name, c.bot_names,
+                           c.bot_assignments, c.debate_topic, c.chat_mode,
+                           c.created_at, c.updated_at,
                            COUNT(m.id) as message_count,
                            SUM(CASE WHEN m.content_type IN ('media', 'mixed') THEN 1 ELSE 0 END) as media_count
                     FROM conversations c
                     LEFT JOIN messages m ON c.id = m.conversation_id
-                    GROUP BY c.id, c.title, c.topic, c.bot_name, c.chat_mode, c.created_at, c.updated_at
+                    GROUP BY c.id, c.title, c.topic, c.bot_name, c.bot_names,
+                             c.bot_assignments, c.debate_topic, c.chat_mode,
+                             c.created_at, c.updated_at
                     ORDER BY c.updated_at DESC
                 """)
                 rows = await cursor.fetchall()
+
+                def _parse_json(raw: Optional[str]) -> Any:
+                    if not raw:
+                        return None
+                    try:
+                        return json.loads(raw)
+                    except (TypeError, ValueError):
+                        return None
+
+                def _parse_bot_names(raw: Optional[str]) -> Optional[List[str]]:
+                    value = _parse_json(raw)
+                    return value if isinstance(value, list) else None
+
+                def _parse_assignments(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+                    value = _parse_json(raw)
+                    return value if isinstance(value, dict) else None
+
                 return [
                     {
                         "id": row[0],
                         "title": row[1],
                         "topic": row[2],
                         "bot_name": row[3],
-                        "chat_mode": row[4],
-                        "created_at": row[5],
-                        "updated_at": row[6],
-                        "message_count": row[7],
-                        "media_count": row[8],
-                        "has_media": row[8] > 0
+                        "bot_names": _parse_bot_names(row[4]),
+                        "bot_assignments": _parse_assignments(row[5]),
+                        "debate_topic": row[6],
+                        "chat_mode": row[7],
+                        "created_at": row[8],
+                        "updated_at": row[9],
+                        "message_count": row[10],
+                        "media_count": row[11],
+                        "has_media": (row[11] or 0) > 0,
                     } for row in rows
                 ]
 
