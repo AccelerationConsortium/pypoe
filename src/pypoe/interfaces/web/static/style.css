@@ -1022,19 +1022,74 @@ body {
 }
 
 /* Responsive Design */
+/* --- Sidebar drawer toggle (narrow screens) ---
+   The hamburger button is hidden by default; the @media block below shows
+   it (and the backdrop) only when the sidebar collapses into a drawer. */
+.sidebar-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    margin-right: 8px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink-muted);
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.sidebar-toggle:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+}
+
+.sidebar-backdrop {
+    /* Off by default; the narrow-screen media query gives it size + opacity
+       only when the drawer is open, so it never intercepts clicks otherwise. */
+    display: none;
+}
+
 @media (max-width: 768px) {
+    .sidebar-toggle {
+        display: inline-flex;
+    }
+
+    .sidebar-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 90;
+        background: rgb(0 0 0 / 0.35);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+    }
+
+    .sidebar-backdrop.visible {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
     .sidebar {
-        width: 100%;
-        position: absolute;
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: min(280px, 86vw);
         z-index: 100;
         transform: translateX(-100%);
-        transition: transform 0.3s ease;
+        transition: transform 0.25s ease;
+        box-shadow: 4px 0 24px rgb(0 0 0 / 0.18);
     }
-    
+
     .sidebar.open {
         transform: translateX(0);
     }
-    
+
     .main-content {
         width: 100%;
     }

@@ -9,8 +9,12 @@
 </head>
 <body>
     <div class="app-container">
+        <!-- Backdrop shown only when the sidebar is open as a drawer on narrow
+             screens. Clicking it closes the drawer. -->
+        <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+
         <!-- Left Panel: Scrollable conversation history -->
-        <div class="sidebar">
+        <div class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <h2><i class="fas fa-robot"></i> PyPoe Chat</h2>
                 <div class="sidebar-actions">
@@ -75,6 +79,16 @@
             <!-- Global Header - Always visible -->
             <div class="global-header">
                 <div class="header-left">
+                    <!-- Drawer toggle: visible only on narrow screens via CSS.
+                         Opens the conversation-history sidebar; auto-closes on
+                         conversation pick, backdrop click, or Escape. -->
+                    <button id="sidebar-toggle" class="sidebar-toggle"
+                            type="button"
+                            aria-label="Show conversation history"
+                            aria-controls="sidebar"
+                            aria-expanded="false">
+                        <i class="fas fa-bars"></i>
+                    </button>
                     <div class="logo-section">
                         <i class="fas fa-robot"></i>
                         <span class="app-title">PyPoe Chat</span>

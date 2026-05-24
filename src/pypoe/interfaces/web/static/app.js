@@ -46,6 +46,14 @@ class PyPoeApp {
         
         // Modal elements
         this.newChatModal = document.getElementById('new-chat-modal');
+
+        // Narrow-screen sidebar drawer
+        this.sidebarEl = document.getElementById('sidebar');
+        this.sidebarToggle = document.getElementById('sidebar-toggle');
+        this.sidebarBackdrop = document.getElementById('sidebar-backdrop');
+        // Matches the @media (max-width: 768px) block in style.css that
+        // turns the sidebar into a drawer. Keep in sync if that changes.
+        this._narrowMq = window.matchMedia('(max-width: 768px)');
     }
     
     bindEvents() {
@@ -89,7 +97,13 @@ class PyPoeApp {
         
         // Global keyboard shortcuts for chat navigation
         document.addEventListener('keydown', (e) => {
-            // Only handle when not typing in input
+            // Esc always closes the drawer if it's open, regardless of focus.
+            if (e.key === 'Escape' && this._isSidebarOpen()) {
+                e.preventDefault();
+                this._closeSidebar();
+                return;
+            }
+            // Other shortcuts: only handle when not typing in input
             if (document.activeElement !== this.messageInput && document.activeElement !== this.searchInput) {
                 if (e.key === 'Home') {
                     e.preventDefault();
@@ -100,6 +114,54 @@ class PyPoeApp {
                 }
             }
         });
+
+        // Sidebar drawer (narrow screens). The toggle button + backdrop are
+        // always in the DOM; CSS hides them on wide screens.
+        if (this.sidebarToggle) {
+            this.sidebarToggle.addEventListener('click', () => this._toggleSidebar());
+        }
+        if (this.sidebarBackdrop) {
+            this.sidebarBackdrop.addEventListener('click', () => this._closeSidebar());
+        }
+        // If the viewport grows past the breakpoint while the drawer is open,
+        // drop the .open class so it doesn't linger when the layout switches
+        // back to permanently-visible mode.
+        const mqHandler = (e) => { if (!e.matches) this._closeSidebar(); };
+        if (this._narrowMq.addEventListener) {
+            this._narrowMq.addEventListener('change', mqHandler);
+        } else if (this._narrowMq.addListener) {
+            this._narrowMq.addListener(mqHandler);   // Safari < 14
+        }
+    }
+
+    _isNarrow() {
+        return !!(this._narrowMq && this._narrowMq.matches);
+    }
+
+    _isSidebarOpen() {
+        return !!(this.sidebarEl && this.sidebarEl.classList.contains('open'));
+    }
+
+    _openSidebar() {
+        if (!this.sidebarEl) return;
+        this.sidebarEl.classList.add('open');
+        if (this.sidebarBackdrop) this.sidebarBackdrop.classList.add('visible');
+        if (this.sidebarToggle) this.sidebarToggle.setAttribute('aria-expanded', 'true');
+    }
+
+    _closeSidebar() {
+        if (!this.sidebarEl) return;
+        this.sidebarEl.classList.remove('open');
+        if (this.sidebarBackdrop) this.sidebarBackdrop.classList.remove('visible');
+        if (this.sidebarToggle) this.sidebarToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    _toggleSidebar() {
+        if (this._isSidebarOpen()) {
+            this._closeSidebar();
+        } else {
+            this._openSidebar();
+        }
     }
     
     async loadInitialData() {
@@ -1155,6 +1217,9 @@ class PyPoeApp {
             item.addEventListener('click', (e) => {
                 if (!e.target.closest('.delete-btn')) {
                     this.selectConversation(item.dataset.id);
+                    // On narrow screens the sidebar is a drawer; auto-close
+                    // so the user can see the chat they just picked.
+                    if (this._isNarrow()) this._closeSidebar();
                 }
             });
         });
