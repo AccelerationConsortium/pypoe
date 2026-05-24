@@ -77,8 +77,8 @@ class ConversationCreate(BaseModel):
     title: Optional[str] = None  # Optional title, will generate timestamp if empty
     bot_name: str
     chat_mode: Optional[str] = "chatbot"  # chatbot, group, debate
-    # Required for chat_mode in ('group','debate'); 2-3 participants drawn
-    # from CHAT_MODELS. Ignored for 'chatbot'.
+    # Required for chat_mode in ('group','debate'); exactly 2 participants
+    # drawn from CHAT_MODELS. Ignored for 'chatbot'.
     bot_names: Optional[List[str]] = None
     # Required for chat_mode='debate'. Keys must equal bot_names exactly.
     bot_assignments: Optional[Dict[str, BotAssignment]] = None
@@ -980,7 +980,7 @@ class WebApp:
                     if not bot_names:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"chat_mode='{chat_mode}' requires bot_names (list of 2-3 models).",
+                            detail=f"chat_mode='{chat_mode}' requires bot_names (list of exactly 2 models).",
                         )
                     if len(bot_names) != 2:
                         raise HTTPException(

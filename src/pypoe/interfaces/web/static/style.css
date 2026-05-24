@@ -1,3 +1,60 @@
+/* =========================================================================
+   Design tokens — Phase 2.5 Option A.
+   Values mirror ac-organic-lab's tailwind.config.ts so PyPoe reads as the
+   same product family. Use `var(--token)` in new rules; legacy rules above
+   are still allowed to keep their literals — the Phase 2.6 compaction block
+   at the bottom overrides them anyway.
+   ========================================================================= */
+:root {
+    /* Ink — primary / muted / subtle text */
+    --ink:               #0f172a;   /* slate-900 */
+    --ink-muted:         #475569;   /* slate-600 */
+    --ink-subtle:        #64748b;   /* slate-500 */
+    --ink-faint:         #94a3b8;   /* slate-400 (timestamps, hover-only) */
+
+    /* Surfaces */
+    --surface:           #ffffff;
+    --surface-subtle:    #f8fafc;   /* slate-50  (page bg, message area) */
+    --surface-hover:     #f1f5f9;   /* slate-100 (sidebar item hover) */
+
+    /* Borders */
+    --border:            #e2e8f0;   /* slate-200 — default 1px */
+    --border-strong:     #cbd5e1;   /* slate-300 */
+    --border-dashed:     #e2e8f0;
+
+    /* Accent — sky family (matches the dashboard's accent ramp) */
+    --accent-50:         #e0f2fe;   /* sky-100 — active sidebar item, user bubble */
+    --accent-100:        #bae6fd;   /* sky-200 — user bubble border */
+    --accent-200:        #7dd3fc;   /* sky-300 — active item border */
+    --accent-500:        #0284c7;   /* sky-600 — selected chip bg */
+    --accent-600:        #0369a1;   /* sky-700 — selected chip hover */
+    --accent-ring:       rgba(2, 132, 199, 0.18);
+
+    /* Status — only the rose-600 ever appears on this surface */
+    --rose-600:          #e11d48;
+
+    /* Typography */
+    --font-sans:         ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                         Roboto, Helvetica, Arial, sans-serif;
+    --text-body:         14px;
+    --text-small:        12px;
+    --text-meta:         11px;
+    --text-tiny:         10.5px;
+    --text-heading:      16px;
+    --leading-body:      1.45;
+
+    /* Card / tile geometry */
+    --radius-tile:       12px;     /* matches Tailwind rounded-xl */
+    --radius-pill:       999px;
+    --shadow-tile:       0 1px 2px rgb(0 0 0 / 0.05);   /* shadow-sm */
+    --shadow-modal:      0 10px 30px rgb(0 0 0 / 0.12);
+
+    /* Layout primitives (Phase 2.6) */
+    --sidebar-w:         200px;
+    --bot-col-w:         400px;
+    --bot-stack-bp:      1100px;   /* break to stacked-columns below this */
+}
+
 /* Global Styles */
 * {
     margin: 0;
@@ -1261,7 +1318,7 @@ body {
 .turn-row.multi .message.user.group-user-cell {
     /* Visually anchor the user column with a hairline divider on the right
        so the human/model boundary is obvious as you scroll. */
-    border-right: 1px dashed #cbd5e1;
+    border-right: 1px dashed var(--border-strong);
     padding-right: 12px;
 }
 
@@ -1307,10 +1364,10 @@ body {
     gap: 0;
     margin: 0;
     padding: 6px 12px;
-    border-radius: 999px;
-    border: 1px solid #cfd8e3;
-    background: #f1f5f9;
-    color: #334155;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    background: var(--surface-hover);
+    color: var(--ink-muted);
     font-size: 0.85rem;
     font-weight: 500;
     cursor: pointer;
@@ -1328,19 +1385,19 @@ body {
 }
 
 .multi-bot-option:hover {
-    background: #e2e8f0;
-    border-color: #94a3b8;
+    background: var(--border);
+    border-color: var(--ink-faint);
 }
 
 .multi-bot-option:has(input:checked) {
-    background: #0284c7;       /* sky-600 — matches the dashboard's accent */
-    border-color: #0284c7;
-    color: #ffffff;
+    background: var(--accent-500);
+    border-color: var(--accent-500);
+    color: var(--surface);
 }
 
 .multi-bot-option:has(input:checked):hover {
-    background: #0369a1;
-    border-color: #0369a1;
+    background: var(--accent-600);
+    border-color: var(--accent-600);
 }
 
 .multi-bot-option:has(input:disabled):not(:has(input:checked)) {
@@ -1349,7 +1406,7 @@ body {
 }
 
 .multi-bot-option:focus-within {
-    outline: 2px solid #38bdf8;
+    outline: 2px solid var(--accent-200);
     outline-offset: 2px;
 }
 
@@ -1362,11 +1419,11 @@ body {
     width: 100%;
     box-sizing: border-box;
     padding: 8px 10px;
-    border: 1px solid #cfd8e3;
+    border: 1px solid var(--border);
     border-radius: 6px;
     font: inherit;
-    background: #ffffff;
-    color: #0f172a;
+    background: var(--surface);
+    color: var(--ink);
 }
 
 .form-group textarea {
@@ -1378,8 +1435,8 @@ body {
 .form-group select:focus,
 .form-group textarea:focus {
     outline: none;
-    border-color: #0284c7;
-    box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
+    border-color: var(--accent-500);
+    box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* --- Folded reasoning blocks --- */
@@ -1387,15 +1444,15 @@ body {
 details.thinking-block {
     margin: 8px 0;
     padding: 6px 10px;
-    background: #f1f5f9;
-    border: 1px solid #cbd5e1;
+    background: var(--surface-hover);
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
     font-size: 0.9em;
 }
 
 details.thinking-block > summary {
     cursor: pointer;
-    color: #475569;
+    color: var(--ink-muted);
     font-size: 0.8rem;
     font-weight: 600;
     letter-spacing: 0.02em;
@@ -1421,10 +1478,10 @@ details.thinking-block[open] > summary::before {
 details.thinking-block > .thinking-content {
     margin-top: 6px;
     padding-top: 6px;
-    border-top: 1px dashed #cbd5e1;
-    color: #475569;
+    border-top: 1px dashed var(--border-strong);
+    color: var(--ink-muted);
     white-space: pre-wrap;
-    line-height: 1.45;
+    line-height: var(--leading-body);
 }
 
 /* On narrow screens, fall back to a single column for legibility. */
@@ -1546,33 +1603,32 @@ details.thinking-block > .thinking-content {
 /* --- Global typography + page bg --- */
 
 body {
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-                 Helvetica, Arial, sans-serif;
-    background-color: #f8fafc;   /* slate-50 */
-    color: #0f172a;              /* ink */
-    font-size: 14px;
-    line-height: 1.45;
+    font-family: var(--font-sans);
+    background-color: var(--surface-subtle);
+    color: var(--ink);
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
 }
 
 /* --- Sidebar: 200px fixed, compact items --- */
 
 .sidebar {
-    width: 200px;
+    width: var(--sidebar-w);
     box-shadow: none;
-    background: #ffffff;
-    border-right: 1px solid #e2e8f0;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
 }
 
 .sidebar-header {
     padding: 12px;
-    background: #ffffff;
-    border-bottom: 1px solid #e2e8f0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
 }
 
 .sidebar-header h2 {
-    font-size: 14px;
+    font-size: var(--text-body);
     font-weight: 600;
-    color: #0f172a;
+    color: var(--ink);
 }
 
 .sidebar-actions {
@@ -1581,7 +1637,7 @@ body {
 }
 
 .sidebar-actions .btn {
-    font-size: 12px;
+    font-size: var(--text-small);
     padding: 6px 8px;
 }
 
@@ -1592,13 +1648,13 @@ body {
 
 .search-controls input,
 .search-controls select {
-    font-size: 12px;
+    font-size: var(--text-small);
     padding: 6px 8px;
 }
 
 .stats-summary {
     padding: 8px 12px;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--border);
 }
 
 .conversations-list {
@@ -1617,14 +1673,14 @@ body {
 }
 
 .conversation-item:hover {
-    background: #f1f5f9;          /* slate-100 */
+    background: var(--surface-hover);
     border-color: transparent;
     transform: none;
 }
 
 .conversation-item.active {
-    background: #e0f2fe;          /* sky-100 */
-    border-color: #7dd3fc;        /* sky-300 */
+    background: var(--accent-50);
+    border-color: var(--accent-200);
 }
 
 .conversation-info {
@@ -1638,7 +1694,7 @@ body {
 .conversation-item .conv-topic {
     font-size: 13px;
     font-weight: 600;
-    color: #0f172a;
+    color: var(--ink);
     line-height: 1.3;
     white-space: nowrap;
     overflow: hidden;
@@ -1652,25 +1708,25 @@ body {
 }
 
 .conversation-item .conv-models {
-    font-size: 11px;
-    color: #475569;               /* ink-muted */
+    font-size: var(--text-meta);
+    color: var(--ink-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 .conversation-item .conv-time {
-    font-size: 10.5px;
-    color: #94a3b8;               /* slate-400 */
+    font-size: var(--text-tiny);
+    color: var(--ink-faint);
 }
 
 .conversation-item .delete-btn {
     opacity: 0;
     background: transparent;
     border: none;
-    color: #94a3b8;
+    color: var(--ink-faint);
     padding: 2px 4px;
-    font-size: 12px;
+    font-size: var(--text-small);
 }
 
 .conversation-item:hover .delete-btn {
@@ -1678,7 +1734,7 @@ body {
 }
 
 .conversation-item .delete-btn:hover {
-    color: #e11d48;               /* rose-600 */
+    color: var(--rose-600);
     background: transparent;
 }
 
@@ -1686,38 +1742,38 @@ body {
 
 .global-header {
     padding: 8px 16px;
-    background: #ffffff;
-    border-bottom: 1px solid #e2e8f0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
     box-shadow: none;
 }
 
 .global-header .app-title {
-    font-size: 14px;
+    font-size: var(--text-body);
 }
 
 .global-header label,
 .global-header select {
-    font-size: 12px;
+    font-size: var(--text-small);
 }
 
 .chat-header {
     padding: 8px 16px;
-    background: #ffffff;
-    border-bottom: 1px solid #e2e8f0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
 }
 
 .chat-header h3 {
-    font-size: 14px;
+    font-size: var(--text-body);
     font-weight: 600;
 }
 
 .chat-header p {
-    font-size: 12px;
-    color: #64748b;
+    font-size: var(--text-small);
+    color: var(--ink-subtle);
 }
 
 .messages-container {
-    background: #f8fafc;
+    background: var(--surface-subtle);
     padding: 12px 16px;
 }
 
@@ -1728,40 +1784,40 @@ body {
 }
 
 .message .message-wrapper {
-    max-width: 400px;
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+    max-width: var(--bot-col-w);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-tile);
+    box-shadow: var(--shadow-tile);
     padding: 10px 14px;
 }
 
 .message.user .message-wrapper {
-    background: #e0f2fe;          /* sky-100 — subtle distinction for human */
-    border-color: #bae6fd;        /* sky-200 */
+    background: var(--accent-50);
+    border-color: var(--accent-100);
 }
 
 .message-content {
-    font-size: 14px;
+    font-size: var(--text-body);
     line-height: 1.5;
-    color: #0f172a;
+    color: var(--ink);
 }
 
 .message-metadata {
-    font-size: 11px;
-    color: #64748b;
+    font-size: var(--text-meta);
+    color: var(--ink-subtle);
 }
 
 .message-avatar {
     width: 28px;
     height: 28px;
-    font-size: 12px;
+    font-size: var(--text-small);
 }
 
 /* --- Group/debate grid: user + 2 bots, fixed widths --- */
 
 .turn-row.multi {
-    grid-template-columns: 200px 400px 400px;
+    grid-template-columns: var(--sidebar-w) var(--bot-col-w) var(--bot-col-w);
     gap: 12px;
     padding: 12px 0;
     align-items: start;
@@ -1784,16 +1840,16 @@ body {
 }
 
 .turn-row.multi .group-user-cell .message-wrapper {
-    background: #e0f2fe;
-    border-color: #bae6fd;
+    background: var(--accent-50);
+    border-color: var(--accent-100);
 }
 
 /* Empty placeholder cells (model hasn't streamed yet) keep the grid
    intact without rendering visible artifacts. */
 .turn-row.multi .placeholder {
     background: transparent;
-    border: 1px dashed #e2e8f0;
-    border-radius: 12px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-tile);
     min-height: 56px;
 }
 
@@ -1802,10 +1858,10 @@ body {
 }
 
 .group-column-header {
-    color: #475569;
-    font-size: 11px;
+    color: var(--ink-muted);
+    font-size: var(--text-meta);
     padding-bottom: 4px;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--border);
     margin-bottom: 6px;
 }
 
@@ -1813,7 +1869,7 @@ body {
 
 @media (max-width: 1100px) {
     .turn-row.multi {
-        grid-template-columns: 200px 400px;
+        grid-template-columns: var(--sidebar-w) var(--bot-col-w);
     }
     /* Every model column collapses into column 2; CSS Grid will lay them
        out in successive rows in append order, which is bot_names order. */
@@ -1842,15 +1898,15 @@ body {
 
 .input-area {
     padding: 12px 16px;
-    background: #f8fafc;
-    border-top: 1px solid #e2e8f0;
+    background: var(--surface-subtle);
+    border-top: 1px solid var(--border);
 }
 
 .input-container {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-tile);
+    box-shadow: var(--shadow-tile);
     padding: 6px;
     display: flex;
     align-items: flex-end;
@@ -1861,12 +1917,12 @@ body {
     border: none;
     outline: none;
     padding: 8px 10px;
-    font-size: 14px;
-    line-height: 1.45;
+    font-size: var(--text-body);
+    line-height: var(--leading-body);
     background: transparent;
     flex: 1;
     resize: none;
-    color: #0f172a;
+    color: var(--ink);
 }
 
 .input-container textarea:focus {
@@ -1881,20 +1937,20 @@ body {
 /* --- Modal (New Chat) — token alignment --- */
 
 .modal-content {
-    border-radius: 12px;
-    border: 1px solid #e2e8f0;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.12);
+    border-radius: var(--radius-tile);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-modal);
 }
 
 .modal-header {
     padding: 14px 16px;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--border);
 }
 
 .modal-header h3 {
     font-size: 15px;
     font-weight: 600;
-    color: #0f172a;
+    color: var(--ink);
 }
 
 .modal-content form {
@@ -1906,14 +1962,14 @@ body {
 }
 
 .form-group label {
-    font-size: 12px;
+    font-size: var(--text-small);
     font-weight: 600;
-    color: #475569;
+    color: var(--ink-muted);
     margin-bottom: 4px;
     display: block;
 }
 
 .form-group label small {
-    color: #94a3b8;
+    color: var(--ink-faint);
     font-weight: normal;
 }
