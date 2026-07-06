@@ -8,6 +8,12 @@ from typing import List, Dict, Any, Optional, Union
 from urllib.parse import urlparse
 import re
 
+# Sentinel for owner-scoped reads (CLAUDE.local.md §4.9): when a caller does
+# not pass ``owner`` we operate across ALL owners — the backward-compatible
+# transition behaviour until the web UI is gated (§4.8). Distinct from
+# ``owner=None``, which scopes to unowned / legacy rows.
+_UNSCOPED = object()
+
 # ``aiohttp`` is only required when media auto-download is enabled. Import it
 # lazily inside ``_download_media`` so chat-only deploys don't need the extra.
 
@@ -49,11 +55,17 @@ class HistoryManager:
         db_path: str,
         media_dir: Optional[str] = None,
         enable_media: bool = False,
+        default_owner=_UNSCOPED,
     ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.enable_media = enable_media
+
+        # Owner-scoping default (CLAUDE.local.md §4.9): a single-user client
+        # (CLI) binds its owner once here; a multi-user caller (Slack) leaves
+        # this ``_UNSCOPED`` and passes ``owner`` per call. Per-call owner wins.
+        self._default_owner = default_owner
 
         # Media storage directory (created lazily so chat-only deployments
         # don't litter the filesystem with an unused directory).
@@ -97,6 +109,7 @@ class HistoryManager:
                         bot_assignments TEXT,   -- JSON dict (debate only): bot_name -> {role, custom_label}
                         debate_topic TEXT,      -- shared topic pinned to every debate turn's system prompt
                         chat_mode TEXT DEFAULT 'chatbot',
+                        owner TEXT,             -- authenticated principal: web X-Auth-User / CLI OS user / 'slack-*'; NULL = legacy/unowned (admin-only)
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
@@ -144,6 +157,14 @@ class HistoryManager:
 
                 # Handle migration from basic schema to enhanced schema
                 await self._migrate_basic_to_enhanced(db)
+
+                # Owner-scoped history (CLAUDE.local.md §4.9): index the owner
+                # column. Created AFTER migration so the column exists whether
+                # it came from CREATE TABLE (new DB) or an ALTER (existing DB).
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversations_owner "
+                    "ON conversations(owner)"
+                )
                 
                 await db.commit()
 
@@ -209,6 +230,14 @@ class HistoryManager:
                 await _add_column(
                     "ALTER TABLE conversations ADD COLUMN debate_topic TEXT",
                     "Added debate_topic column to conversations table",
+                )
+
+            # Owner-scoped per-user history (CLAUDE.local.md §4.9). Existing
+            # rows stay NULL → treated as admin-only.
+            if 'owner' not in conv_cols:
+                await _add_column(
+                    "ALTER TABLE conversations ADD COLUMN owner TEXT",
+                    "Added owner column to conversations table",
                 )
 
             msg_cols = await _column_names("messages")
@@ -347,6 +376,34 @@ class HistoryManager:
             print(f"Warning: Failed to download media from {url}: {e}")
             return None
 
+    def _resolve_owner(self, owner):
+        """Fall back to the instance default when the caller didn't scope.
+
+        Per-call ``owner`` (anything other than ``_UNSCOPED``) always wins;
+        otherwise the constructor's ``default_owner`` applies (CLAUDE.local.md
+        §4.9).
+        """
+        return self._default_owner if owner is _UNSCOPED else owner
+
+    async def _assert_owner(self, db, conversation_id: str, owner, is_admin: bool) -> None:
+        """Raise ``PermissionError`` if ``owner`` is set and mismatches the row.
+
+        Owner-scoping enforcement helper (CLAUDE.local.md §4.9). No-op when
+        ``is_admin``, when ``owner`` is ``_UNSCOPED`` (pre-gating transition),
+        or when the conversation does not exist (a harmless target for a
+        delete / no-op mutation).
+        """
+        if is_admin or owner is _UNSCOPED:
+            return
+        cur = await db.execute(
+            "SELECT owner FROM conversations WHERE id = ?", (conversation_id,)
+        )
+        row = await cur.fetchone()
+        if row is not None and row[0] != owner:
+            raise PermissionError(
+                f"conversation {conversation_id!r} is not owned by {owner!r}"
+            )
+
     async def create_conversation(
         self,
         title: str,
@@ -357,6 +414,7 @@ class HistoryManager:
         bot_names: Optional[List[str]] = None,
         bot_assignments: Optional[Dict[str, Dict[str, Any]]] = None,
         debate_topic: Optional[str] = None,
+        owner=_UNSCOPED,
     ) -> str:
         """Creates a new conversation with enhanced metadata.
 
@@ -373,8 +431,15 @@ class HistoryManager:
         ``bot_assignments`` and ``debate_topic`` are required for
         ``chat_mode='debate'`` and ignored otherwise; both are validated
         upstream in the API layer.
+
+        ``owner`` stamps the authenticated principal (CLAUDE.local.md §4.9):
+        web ``X-Auth-User``, the CLI OS user, or a ``slack-*`` namespace.
+        ``None`` leaves the row unowned (legacy / pre-gating), which
+        owner-scoped reads treat as admin-only.
         """
         conversation_id = conversation_id or str(uuid.uuid4())
+        stored_owner = self._resolve_owner(owner)
+        owner_value = None if stored_owner is _UNSCOPED else stored_owner
         bot_names_json = json.dumps(bot_names) if bot_names else None
         bot_assignments_json = (
             json.dumps(bot_assignments) if bot_assignments else None
@@ -384,8 +449,8 @@ class HistoryManager:
                 await db.execute(
                     "INSERT OR IGNORE INTO conversations "
                     "(id, title, topic, bot_name, bot_names, "
-                    " bot_assignments, debate_topic, chat_mode) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    " bot_assignments, debate_topic, chat_mode, owner) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         conversation_id,
                         title,
@@ -395,6 +460,7 @@ class HistoryManager:
                         bot_assignments_json,
                         debate_topic,
                         chat_mode,
+                        owner_value,
                     ),
                 )
                 await db.commit()
@@ -406,6 +472,8 @@ class HistoryManager:
         *,
         debate_topic: Optional[str] = None,
         bot_assignments: Optional[Dict[str, Dict[str, Any]]] = None,
+        owner=_UNSCOPED,
+        is_admin: bool = False,
     ) -> None:
         """Partial update for debate-only fields. ``None`` means 'leave alone'.
 
@@ -417,6 +485,8 @@ class HistoryManager:
             return
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
+                # Owner-scoping (§4.9): refuse cross-owner edits.
+                await self._assert_owner(db, conversation_id, self._resolve_owner(owner), is_admin)
                 if debate_topic is not None:
                     await db.execute(
                         "UPDATE conversations SET debate_topic = ?, "
@@ -437,7 +507,10 @@ class HistoryManager:
                          content: str,
                          bot_name: Optional[str] = None,
                          download_media: bool = True,
-                         model_name: Optional[str] = None) -> int:
+                         model_name: Optional[str] = None,
+                         *,
+                         owner=_UNSCOPED,
+                         is_admin: bool = False) -> int:
         """Adds a message, with optional media auto-download.
 
         Media detection and downloading are skipped when ``self.enable_media``
@@ -459,6 +532,8 @@ class HistoryManager:
 
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
+                # Owner-scoping (§4.9): refuse writing into another owner's convo.
+                await self._assert_owner(db, conversation_id, self._resolve_owner(owner), is_admin)
                 # Insert message
                 cursor = await db.execute("""
                     INSERT INTO messages (conversation_id, role, content, content_type, media_data, model_name)
@@ -499,21 +574,36 @@ class HistoryManager:
     async def get_conversation_messages(self, 
                                       conversation_id: str,
                                       include_media_metadata: bool = True,
-                                      media_context_limit: int = 5) -> List[Dict[str, Any]]:
-        """Gets messages with intelligent media context handling."""
+                                      media_context_limit: int = 5,
+                                      *,
+                                      owner=_UNSCOPED,
+                                      is_admin: bool = False) -> List[Dict[str, Any]]:
+        """Gets messages with intelligent media context handling.
+
+        Owner-scoping (CLAUDE.local.md §4.9): when ``owner`` is set and does
+        not match the conversation's owner (and ``is_admin`` is False), returns
+        ``[]`` — knowing a conversation id must not be enough to read another
+        user's messages. Default (``owner`` unset) reads any conversation, the
+        transition behaviour until the web UI is gated.
+        """
         
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
                 # Get conversation info
                 cursor = await db.execute("""
-                    SELECT bot_name FROM conversations WHERE id = ?
+                    SELECT bot_name, owner FROM conversations WHERE id = ?
                 """, (conversation_id,))
                 conv_info = await cursor.fetchone()
-                
+
                 if not conv_info:
                     return []
-                
-                bot_name = conv_info[0]
+
+                bot_name, conv_owner = conv_info
+
+                # Owner-scoping (§4.9): deny cross-owner reads unless admin.
+                owner = self._resolve_owner(owner)
+                if not (is_admin or owner is _UNSCOPED or conv_owner == owner):
+                    return []
                 is_media_model = any(
                     any(model in bot_name for model in models) 
                     for models in self.media_models.values()
@@ -596,23 +686,41 @@ class HistoryManager:
                 
                 return messages
 
-    async def get_conversations(self) -> List[Dict[str, Any]]:
-        """Gets all conversations with enhanced metadata."""
+    async def get_conversations(self, *, owner=_UNSCOPED,
+                                is_admin: bool = False) -> List[Dict[str, Any]]:
+        """Gets conversations with enhanced metadata.
+
+        Owner-scoping (CLAUDE.local.md §4.9): by default (``owner`` unset)
+        returns *all* conversations — the backward-compatible transition
+        behaviour until the web UI is gated (§4.8). Pass ``owner=<principal>``
+        to restrict to that owner's rows; ``is_admin=True`` sees everything
+        (AUTH_DESIGN Req 4). Legacy rows have ``owner IS NULL`` and are visible
+        only to admins (or via an explicit ``owner=None`` query).
+        """
+        owner = self._resolve_owner(owner)
+        where, params = "", []
+        if not is_admin and owner is not _UNSCOPED:
+            if owner is None:
+                where = "WHERE c.owner IS NULL"
+            else:
+                where = "WHERE c.owner = ?"
+                params.append(owner)
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
-                cursor = await db.execute("""
+                cursor = await db.execute(f"""
                     SELECT c.id, c.title, c.topic, c.bot_name, c.bot_names,
-                           c.bot_assignments, c.debate_topic, c.chat_mode,
+                           c.bot_assignments, c.debate_topic, c.chat_mode, c.owner,
                            c.created_at, c.updated_at,
                            COUNT(m.id) as message_count,
                            SUM(CASE WHEN m.content_type IN ('media', 'mixed') THEN 1 ELSE 0 END) as media_count
                     FROM conversations c
                     LEFT JOIN messages m ON c.id = m.conversation_id
+                    {where}
                     GROUP BY c.id, c.title, c.topic, c.bot_name, c.bot_names,
-                             c.bot_assignments, c.debate_topic, c.chat_mode,
+                             c.bot_assignments, c.debate_topic, c.chat_mode, c.owner,
                              c.created_at, c.updated_at
                     ORDER BY c.updated_at DESC
-                """)
+                """, params)
                 rows = await cursor.fetchall()
 
                 def _parse_json(raw: Optional[str]) -> Any:
@@ -641,18 +749,29 @@ class HistoryManager:
                         "bot_assignments": _parse_assignments(row[5]),
                         "debate_topic": row[6],
                         "chat_mode": row[7],
-                        "created_at": row[8],
-                        "updated_at": row[9],
-                        "message_count": row[10],
-                        "media_count": row[11],
-                        "has_media": (row[11] or 0) > 0,
+                        "owner": row[8],
+                        "created_at": row[9],
+                        "updated_at": row[10],
+                        "message_count": row[11],
+                        "media_count": row[12],
+                        "has_media": (row[12] or 0) > 0,
                     } for row in rows
                 ]
 
-    async def delete_conversation(self, conversation_id: str):
-        """Delete a conversation and properly clean up all associated media files."""
+    async def delete_conversation(self, conversation_id: str, *,
+                                  owner=_UNSCOPED, is_admin: bool = False):
+        """Delete a conversation and clean up all associated media files.
+
+        Owner-scoping (CLAUDE.local.md §4.9): if ``owner`` is set and does not
+        match the conversation's owner (and not ``is_admin``), raises
+        ``PermissionError`` instead of deleting. A non-existent conversation is
+        a harmless no-op regardless.
+        """
         async with self._lock:
             async with aiosqlite.connect(self.db_path) as db:
+                # Owner-scoping (§4.9): refuse cross-owner deletes.
+                await self._assert_owner(db, conversation_id, self._resolve_owner(owner), is_admin)
+
                 # Step 1: Find all media files associated with this conversation
                 cursor = await db.execute("""
                     SELECT mf.local_path 

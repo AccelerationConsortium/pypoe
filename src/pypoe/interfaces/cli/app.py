@@ -8,6 +8,7 @@ Provides commands for chatting, viewing history, and managing conversations.
 
 import asyncio
 import argparse
+import getpass
 import sys
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -28,7 +29,13 @@ class PyPoeCLI:
     async def _get_client(self) -> PoeChatClient:
         """Get or create a client instance."""
         if self.client is None:
-            self.client = PoeChatClient(config=self.config, enable_history=True)
+            # Owner-scoping (CLAUDE.local.md §4.9): the CLI runs as an OS user,
+            # so stamp/scope its history to that principal.
+            self.client = PoeChatClient(
+                config=self.config,
+                enable_history=True,
+                owner=getpass.getuser(),
+            )
         return self.client
     
     async def _close_client(self):

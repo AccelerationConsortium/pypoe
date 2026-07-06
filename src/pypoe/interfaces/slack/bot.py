@@ -65,6 +65,7 @@ class SlackConversationContext:
     channel_type: str  # 'im', 'public_channel', 'private_channel', 'group', 'mpim'
     chat_mode: str     # 'slack_dm' or 'slack_thread'
     thread_ts: Optional[str] = None
+    owner: Optional[str] = None   # owner-scoping (§4.9): 'slack-dm:<user>' or 'slack-channel:<channel>'
     preferred_model: str = DEFAULT_CHAT_MODEL
     last_activity: datetime = None
     max_context_messages: int = 50  # Default message limit
@@ -73,6 +74,14 @@ class SlackConversationContext:
     def __post_init__(self):
         if self.last_activity is None:
             self.last_activity = datetime.now()
+        if self.owner is None:
+            # Owner-scoping (§4.9): DMs are per-user; threads are channel-scoped
+            # (a thread's audience is the channel members — Slack enforces it).
+            self.owner = (
+                f"slack-dm:{self.user_id}"
+                if self.chat_mode == "slack_dm"
+                else f"slack-channel:{self.channel_id}"
+            )
 
 class PoeBotUsageTracker:
     """Track usage statistics."""
@@ -365,6 +374,13 @@ class PyPoeSlackBot:
         # Ensure the parent conversation row exists so messages aren't orphaned.
         # ``create_conversation`` is idempotent for explicit ids (INSERT OR IGNORE),
         # so calling it on every cold lookup is safe and cheap.
+        # Owner-scoping (§4.9): DMs per-user, threads channel-scoped.
+        owner = (
+            f"slack-dm:{user_id}"
+            if chat_mode == "slack_dm"
+            else f"slack-channel:{channel_id}"
+        )
+
         if self.history:
             try:
                 await self.history.create_conversation(
@@ -372,6 +388,7 @@ class PyPoeSlackBot:
                     bot_name=DEFAULT_CHAT_MODEL,
                     chat_mode=chat_mode,
                     conversation_id=conversation_id,
+                    owner=owner,
                 )
             except Exception as e:
                 logger.error(f"Failed to ensure conversation row in database: {e}")
@@ -383,6 +400,7 @@ class PyPoeSlackBot:
             channel_type=channel_type,
             chat_mode=chat_mode,
             thread_ts=thread_ts,
+            owner=owner,
         )
 
         # Set appropriate context limits for the default model
@@ -703,7 +721,7 @@ class PyPoeSlackBot:
             if self.history:
                 try:
                     existing_messages = await self.history.get_conversation_messages(
-                        context.conversation_id
+                        context.conversation_id, owner=context.owner
                     )
 
                     conversation_messages = [
@@ -724,6 +742,7 @@ class PyPoeSlackBot:
                         conversation_id=context.conversation_id,
                         role="user",
                         content=text,
+                        owner=context.owner,
                     )
 
                 except Exception as e:
@@ -746,6 +765,7 @@ class PyPoeSlackBot:
                     role="assistant",
                     content=full_response,
                     bot_name=context.preferred_model,
+                    owner=context.owner,
                 )
 
             self.usage_tracker.track_usage(
@@ -809,7 +829,9 @@ class PyPoeSlackBot:
         """Reset the conversation history for a context."""
         try:
             if self.history:
-                await self.history.delete_conversation(context.conversation_id)
+                await self.history.delete_conversation(
+                    context.conversation_id, owner=context.owner
+                )
 
                 # Re-derive id from the same scoping inputs and re-seed the
                 # parent row so future messages aren't orphaned.
@@ -824,6 +846,7 @@ class PyPoeSlackBot:
                     bot_name=context.preferred_model,
                     chat_mode=chat_mode,
                     conversation_id=conversation_id,
+                    owner=context.owner,
                 )
 
             await respond_func(f"✅ Conversation reset\n📍 Context: {context.chat_mode}")
@@ -865,7 +888,9 @@ class PyPoeSlackBot:
         
         try:
             # Get all messages for this conversation
-            all_messages = await self.history.get_conversation_messages(context.conversation_id)
+            all_messages = await self.history.get_conversation_messages(
+                context.conversation_id, owner=context.owner
+            )
             
             if not all_messages:
                 return f"""

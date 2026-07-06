@@ -8,11 +8,12 @@ from .config import get_config, Config
 from .models import CHAT_MODELS, DEFAULT_CHAT_MODEL
 
 try:
-    from .history import HistoryManager
+    from .history import HistoryManager, _UNSCOPED
     HISTORY_AVAILABLE = True
 except ImportError:
     HISTORY_AVAILABLE = False
     HistoryManager = None
+    _UNSCOPED = None
 
 class ContentProcessor:
     """Utility class for processing and filtering API responses."""
@@ -122,7 +123,8 @@ class ContentProcessor:
 class PoeChatClient:
     """A high-level client for interacting with Poe.com using the official API."""
 
-    def __init__(self, config: Config = None, enable_history: bool = True):
+    def __init__(self, config: Config = None, enable_history: bool = True,
+                 owner: Optional[str] = None):
         if config is None:
             config = get_config()
         
@@ -130,6 +132,12 @@ class PoeChatClient:
         self.api_key = config.poe_api_key
         self.enable_history = enable_history and HISTORY_AVAILABLE
         self.content_processor = ContentProcessor()
+
+        # Owner-scoping (CLAUDE.local.md §4.9): when set (e.g. the CLI's OS
+        # user), every history op this client performs is stamped/scoped to
+        # this principal. ``None`` = unscoped (the transition default; the web
+        # UI stays unscoped until it is gated per §4.8).
+        self._owner = owner
         
         if self.enable_history:
             # Setup media directory for history (only materialized if media
@@ -140,6 +148,7 @@ class PoeChatClient:
                 db_path=str(self.config.database_path),
                 media_dir=str(media_dir),
                 enable_media=self.config.enable_media,
+                default_owner=(owner if owner is not None else _UNSCOPED),
             )
             self._history_initialized = False
         else:
@@ -606,10 +615,19 @@ class PoeChatClient:
         import aiosqlite
         async with self.history._lock:
             async with aiosqlite.connect(self.history.db_path) as db:
-                await db.execute(
-                    "UPDATE conversations SET topic = ? WHERE id = ?",
-                    (topic, conversation_id)
-                )
+                # Owner-scoping (§4.9): scope the update to this client's owner
+                # when one is bound; unscoped clients update by id only.
+                if self._owner is not None:
+                    await db.execute(
+                        "UPDATE conversations SET topic = ? "
+                        "WHERE id = ? AND owner = ?",
+                        (topic, conversation_id, self._owner),
+                    )
+                else:
+                    await db.execute(
+                        "UPDATE conversations SET topic = ? WHERE id = ?",
+                        (topic, conversation_id)
+                    )
                 await db.commit()
 
     async def generate_and_update_topic(
