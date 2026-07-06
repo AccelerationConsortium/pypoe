@@ -74,7 +74,7 @@ class ConsultSection:
 class LabConfig:
     """Effective config used by every ``pypoe.lab.*`` module."""
 
-    api_url: str = "http://localhost:8001"
+    api_url: str = "http://localhost:8000"
     slack: SlackSection = field(default_factory=SlackSection)
     alerts: AlertsSection = field(default_factory=AlertsSection)
     mcp: McpSection = field(default_factory=McpSection)
@@ -199,7 +199,7 @@ def load_config() -> LabConfig:
     api_url = (
         os.environ.get("LAB_API_URL")
         or _dig(lab_root, "api_url")
-        or "http://localhost:8001"
+        or "http://localhost:8000"
     )
 
     slack = SlackSection(

@@ -25,7 +25,7 @@ def _write_yaml(tmp_path, data: dict):
 
 def test_defaults_when_no_yaml_no_env(monkeypatch):
     cfg = lab_config.load_config()
-    assert cfg.api_url == "http://localhost:8001"
+    assert cfg.api_url == "http://localhost:8000"
     assert cfg.slack.alert_channel == "#lab-alerts"
     assert cfg.slack.command_prefix == "/lab-"
     assert cfg.alerts.max_concurrent_investigations == 2
@@ -74,7 +74,7 @@ def test_partial_yaml_uses_defaults_for_missing_keys(monkeypatch, tmp_path):
     # Untouched keys → defaults.
     assert cfg.slack.command_prefix == "/lab-"
     assert cfg.alerts.max_concurrent_investigations == 2
-    assert cfg.api_url == "http://localhost:8001"
+    assert cfg.api_url == "http://localhost:8000"
 
 
 def test_malformed_yaml_falls_back_to_defaults(monkeypatch, tmp_path):
@@ -82,7 +82,7 @@ def test_malformed_yaml_falls_back_to_defaults(monkeypatch, tmp_path):
     path.write_text("not: valid: yaml: at all:::")
     monkeypatch.setenv("PYPOE_LAB_CONFIG", str(path))
     cfg = lab_config.reload_config()
-    assert cfg.api_url == "http://localhost:8001"
+    assert cfg.api_url == "http://localhost:8000"
     assert cfg.source_path is None  # marked as "didn't load"
 
 
@@ -91,7 +91,7 @@ def test_non_mapping_yaml_falls_back(monkeypatch, tmp_path):
     path.write_text("- just\n- a\n- list\n")
     monkeypatch.setenv("PYPOE_LAB_CONFIG", str(path))
     cfg = lab_config.reload_config()
-    assert cfg.api_url == "http://localhost:8001"
+    assert cfg.api_url == "http://localhost:8000"
     assert cfg.source_path is None
 
 

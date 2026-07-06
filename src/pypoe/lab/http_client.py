@@ -1,6 +1,6 @@
 """Async HTTP client for the AC Organic Self-driving Lab aggregator.
 
-The aggregator (``ac-organic-lab/api`` on port 8001 by default) is the
+The lab dashboard (``ac-organic-lab`` web, port 8000 by default) fronts the
 single source of truth for lab state. This module only wraps its read
 endpoints plus the ingest write endpoint used to journal agent
 observations. No ``/control/*`` calls — see the module docstring of
@@ -29,7 +29,7 @@ from .config import load_config
 
 
 # Hardcoded fallbacks if neither slack.yaml nor env vars set anything.
-DEFAULT_BASE_URL = "http://localhost:8001"
+DEFAULT_BASE_URL = "http://localhost:8000"
 DEFAULT_TIMEOUT_S = 10.0
 DEFAULT_AGENT_SOURCE = "claude-agent"
 

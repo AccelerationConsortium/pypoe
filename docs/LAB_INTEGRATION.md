@@ -23,7 +23,7 @@ four-layer interlock model documented in `ac-organic-lab/docs/INTERLOCKS.md`.
 ## Architecture (one diagram)
 
 ```
-Browser ──► Next.js (web/) ──► FastAPI aggregator (:8001) ──► equipment APIs
+Browser ──► Next.js (web/, :8000) ──► FastAPI aggregator (:8001) ──► equipment APIs
                                 ▲              ▲
                                 │              │  POST /api/ingest/events
                                 │              │  (agent observations)
@@ -39,8 +39,9 @@ Browser ──► Next.js (web/) ──► FastAPI aggregator (:8001) ──► 
                                        └─► ask_human  (Slack thread reply)
 ```
 
-The aggregator at `LAB_API_URL` (default `http://localhost:8001`) is
-the **single source of truth**. PyPoe never caches lab state.
+The dashboard at `LAB_API_URL` (default `http://localhost:8000`) — the
+Next.js front door, which proxies `/api/*` to the FastAPI aggregator on
+`:8001` — is the **single source of truth**. PyPoe never caches lab state.
 
 ## Install
 
@@ -75,14 +76,14 @@ Three files cooperate, all under **`src/pypoe/config/`**:
 All three files are optional. With none present, both loaders fall
 back to baked-in defaults: an 8-model `CHAT_MODELS` snapshot and the
 defaults inside `pypoe.lab.config.LabConfig`. `pypoe lab-mcp` and
-`pypoe lab-status` start cleanly against `http://localhost:8001` in
+`pypoe lab-status` start cleanly against `http://localhost:8000` in
 that mode.
 
 ### `slack.yaml` schema
 
 ```yaml
 lab:
-  api_url: http://localhost:8001        # ac-organic-lab aggregator
+  api_url: http://localhost:8000        # ac-organic-lab dashboard (proxies /api/* to :8001)
   slack:
     alert_channel: "#lab-alerts"        # Kuma alerts + ask_human
     command_prefix: /lab-               # namespace for /lab-* commands
@@ -298,7 +299,7 @@ the PyPoe environment. `consult_poe` uses your `POE_API_KEY`.
 pypoe lab-status
 
 # Override base URL for ad-hoc checks against a non-default aggregator:
-pypoe lab-status --base-url http://lab-staging:8001
+pypoe lab-status --base-url http://lab-staging:8000
 
 # Run the MCP server interactively (Claude Desktop / Code spawns this):
 pypoe lab-mcp

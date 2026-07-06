@@ -78,7 +78,7 @@ Quick Start:
     lab_mcp_parser.add_argument(
         '--base-url',
         default=None,
-        help='Override LAB_API_URL (default: http://localhost:8001).',
+        help='Override LAB_API_URL (default: http://localhost:8000).',
     )
 
     lab_status_parser = subparsers.add_parser(
@@ -88,7 +88,7 @@ Quick Start:
     lab_status_parser.add_argument(
         '--base-url',
         default=None,
-        help='Override LAB_API_URL (default: http://localhost:8001).',
+        help='Override LAB_API_URL (default: http://localhost:8000).',
     )
 
     return parser

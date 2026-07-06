@@ -18,8 +18,9 @@
 # See PyPoe/docs/LAB_INTEGRATION.md for the full reference.
 
 lab:
-  # Aggregator (ac-organic-lab/api) base URL. Used by every lab module.
-  api_url: http://localhost:8001
+  # Lab dashboard base URL (ac-organic-lab web on :8000; proxies /api/*
+  # to the FastAPI aggregator). Used by every lab module.
+  api_url: http://localhost:8000
 
   slack:
     # Channel that Kuma alerts and `ask_human` post into. Must exist
