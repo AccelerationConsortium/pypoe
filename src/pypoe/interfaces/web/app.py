@@ -18,7 +18,7 @@ import uvicorn
 
 from ...core.config import get_config, Config
 from ...core.client import PoeChatClient
-from ...core.history import owner_ctx
+from ...core.history import owner_ctx, _UNSCOPED
 from ...core.logging_db import logger
 from ...core.models import CHAT_MODELS, DEFAULT_CHAT_MODEL
 
@@ -28,35 +28,166 @@ import logging
 _stdlib_logger = logging.getLogger(__name__)
 
 
-class _OwnerScopeMiddleware:
-    """Pure-ASGI middleware that binds the per-request owner (§4.8).
+# Paths that stay reachable even when cookie-verify gating is on: the
+# STATUS_SPEC probes the aggregator polls, static assets, and the Kuma
+# webhook. Everything else (the UI + /api/*) is gated in cookie-verify mode.
+_PUBLIC_EXACT = {"/health", "/status", "/", "/favicon.ico"}
+_PUBLIC_PREFIXES = ("/static/", "/alerts/", "/control/")
 
-    Reads the ``X-Auth-User`` header the ac_auth Caddy edge injects and puts
-    it in ``owner_ctx`` for the life of the request, so the shared
-    ``HistoryManager`` scopes conversations to the signed-in user without
-    threading an owner through every route (covers websockets too). Only
-    active when ``trust`` is set (``PYPOE_TRUST_FORWARD_AUTH``); otherwise the
-    header is ignored so a directly-reachable port cannot be spoofed before the
-    edge is in front of it. Pure ASGI (not BaseHTTPMiddleware) so the
+
+async def _verify_session(auth_service_base: str, cookie_header: str):
+    """Validate a session cookie against the ac_auth sidecar's /auth/verify.
+
+    Mirrors the dashboard's Next.js middleware. Returns the resolved user
+    (str), ``None`` when the sidecar says unauthenticated (401/403), or the
+    string ``"unreachable"`` when we could not reach/parse the sidecar (so the
+    caller can fail *open* rather than lock everyone out during an outage).
+    Broken out as a module function so tests can monkeypatch it.
+    """
+    try:
+        import httpx
+    except Exception:
+        return "unreachable"
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(
+                f"{auth_service_base}/auth/verify",
+                headers={"cookie": cookie_header},
+            )
+    except Exception:
+        return "unreachable"
+    if resp.status_code == 200:
+        return resp.headers.get("x-auth-user") or None
+    if resp.status_code in (401, 403):
+        return None
+    return "unreachable"
+
+
+class _OwnerScopeMiddleware:
+    """Pure-ASGI middleware that binds the per-request signed-in user (§4.8).
+
+    Two opt-in modes (default: neither set => open/unscoped, unchanged):
+
+    * **header/edge** (``trust_header``, ``PYPOE_TRUST_FORWARD_AUTH``): trust
+      the ``X-Auth-User`` header injected by a Caddy ``forward_auth`` edge —
+      for the eventual off-Tailnet public deploy.
+    * **cookie-verify** (``verify_cookie``, ``PYPOE_AUTH_VERIFY_COOKIE``): no
+      edge — validate the request's ``ac_auth_session`` cookie against the
+      ac_auth sidecar's ``GET /auth/verify`` (exactly like the dashboard's
+      Next.js middleware) and read the resolved ``X-Auth-User``. Fits the
+      current Tailnet reality (no Caddy).
+
+    Whichever resolves an identity, it is bound to ``owner_ctx`` so the shared
+    ``HistoryManager`` scopes conversations to that user with no per-route
+    changes (websockets included). Pure ASGI (not BaseHTTPMiddleware) so the
     contextvar reliably propagates into the endpoint's context.
+
+    In cookie-verify mode PyPoe's reads are *private per-user chat*, so reads
+    are gated too: an unauthenticated HTML ``GET`` is redirected to
+    ``login_url`` (else 401), XHR gets 401, and websockets are closed. Fails
+    **closed** on a missing/invalid cookie, but **open** if the sidecar is
+    unreachable (an outage must not lock everyone out).
     """
 
-    def __init__(self, app, trust: bool = False):
+    def __init__(self, app, *, trust_header: bool = False,
+                 verify_cookie: bool = False,
+                 auth_service_base: str = "", login_url: str = ""):
         self.app = app
-        self.trust = trust
+        self.trust_header = trust_header
+        self.verify_cookie = verify_cookie
+        self.auth_service_base = (auth_service_base or "").rstrip("/")
+        self.login_url = login_url
+
+    def _is_public(self, path: str) -> bool:
+        return path in _PUBLIC_EXACT or path.startswith(_PUBLIC_PREFIXES)
 
     async def __call__(self, scope, receive, send):
-        token = None
-        if self.trust and scope.get("type") in ("http", "websocket"):
-            for key, value in scope.get("headers") or ():
+        stype = scope.get("type")
+        if stype not in ("http", "websocket") or not (
+            self.trust_header or self.verify_cookie
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = scope.get("headers") or ()
+        user = None
+
+        # Header/edge mode first (cheap, no I/O).
+        if self.trust_header:
+            for key, value in headers:
                 if key == b"x-auth-user" and value:
-                    token = owner_ctx.set(value.decode("latin1"))
+                    user = value.decode("latin1")
                     break
+
+        # Cookie-verify mode: hit the sidecar unless this path is public.
+        if user is None and self.verify_cookie and not self._is_public(
+            scope.get("path", "")
+        ):
+            cookie = ""
+            for key, value in headers:
+                if key == b"cookie":
+                    cookie = value.decode("latin1")
+                    break
+            verdict = await _verify_session(self.auth_service_base, cookie)
+            if verdict == "unreachable":
+                # Fail open: proceed unscoped rather than lock everyone out.
+                _stdlib_logger.warning(
+                    "ac_auth sidecar unreachable at %s; failing open (unscoped)",
+                    self.auth_service_base,
+                )
+                await self.app(scope, receive, send)
+                return
+            if verdict is None:
+                # Fail closed: not authenticated.
+                await self._reject(scope, receive, send)
+                return
+            user = verdict
+
+        token = owner_ctx.set(user) if user else None
         try:
             await self.app(scope, receive, send)
         finally:
             if token is not None:
                 owner_ctx.reset(token)
+
+    async def _reject(self, scope, receive, send):
+        if scope.get("type") == "websocket":
+            # Consume the connect event, then refuse the handshake.
+            await receive()
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        accept = ""
+        for key, value in scope.get("headers") or ():
+            if key == b"accept":
+                accept = value.decode("latin1")
+                break
+        wants_html = scope.get("method") == "GET" and "text/html" in accept
+        if wants_html and self.login_url:
+            await send({
+                "type": "http.response.start",
+                "status": 302,
+                "headers": [(b"location", self.login_url.encode("latin1"))],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if wants_html:
+            body = (
+                b"<!doctype html><meta charset=utf-8><title>Sign in required</title>"
+                b"<body style='font-family:sans-serif;padding:2rem'>"
+                b"<h3>Sign in required</h3><p>Sign in on the lab dashboard, "
+                b"then reload PyPoe.</p></body>"
+            )
+            ctype = b"text/html; charset=utf-8"
+        else:
+            body = b'{"detail":"authentication required"}'
+            ctype = b"application/json"
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [(b"content-type", ctype),
+                        (b"content-length", str(len(body)).encode())],
+        })
+        await send({"type": "http.response.body", "body": body})
 
 # TODO: Add support for remote access of the webpage with username and password protection
 # This would involve:
@@ -204,7 +335,10 @@ class WebApp:
         # scoped per user. Gated by PYPOE_TRUST_FORWARD_AUTH.
         self.app.add_middleware(
             _OwnerScopeMiddleware,
-            trust=config.web_trust_forward_auth,
+            trust_header=config.web_trust_forward_auth,
+            verify_cookie=config.web_auth_verify_cookie,
+            auth_service_base=config.web_auth_service_base,
+            login_url=config.web_login_url,
         )
 
         self.client = PoeChatClient(config=config)
@@ -604,15 +738,14 @@ class WebApp:
         )
 
     def _current_user(self, request) -> Optional[str]:
-        """The signed-in user from the ac_auth edge, when trusted (§4.8).
+        """The signed-in user for this request (§4.8), for the UI banner.
 
-        Returns the ``X-Auth-User`` header value (the same identity
-        ``_OwnerScopeMiddleware`` scopes history by) or ``None`` when the edge
-        is not trusted / no header is present.
+        Reads whatever ``_OwnerScopeMiddleware`` resolved into ``owner_ctx``
+        (header/edge or cookie-verify), so it works in both modes. ``None``
+        when unauthenticated / auth disabled.
         """
-        if not self.config.web_trust_forward_auth:
-            return None
-        return request.headers.get("x-auth-user")
+        value = owner_ctx.get()
+        return None if value is _UNSCOPED else value
 
     def _now_utc(self) -> datetime:
         return datetime.now(timezone.utc)
