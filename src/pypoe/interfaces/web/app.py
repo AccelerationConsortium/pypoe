@@ -18,6 +18,7 @@ import uvicorn
 
 from ...core.config import get_config, Config
 from ...core.client import PoeChatClient
+from ...core.history import owner_ctx
 from ...core.logging_db import logger
 from ...core.models import CHAT_MODELS, DEFAULT_CHAT_MODEL
 
@@ -25,6 +26,37 @@ from ...core.models import CHAT_MODELS, DEFAULT_CHAT_MODEL
 # PyPoeLogger above (e.g. optional lab-integration wiring).
 import logging
 _stdlib_logger = logging.getLogger(__name__)
+
+
+class _OwnerScopeMiddleware:
+    """Pure-ASGI middleware that binds the per-request owner (§4.8).
+
+    Reads the ``X-Auth-User`` header the ac_auth Caddy edge injects and puts
+    it in ``owner_ctx`` for the life of the request, so the shared
+    ``HistoryManager`` scopes conversations to the signed-in user without
+    threading an owner through every route (covers websockets too). Only
+    active when ``trust`` is set (``PYPOE_TRUST_FORWARD_AUTH``); otherwise the
+    header is ignored so a directly-reachable port cannot be spoofed before the
+    edge is in front of it. Pure ASGI (not BaseHTTPMiddleware) so the
+    contextvar reliably propagates into the endpoint's context.
+    """
+
+    def __init__(self, app, trust: bool = False):
+        self.app = app
+        self.trust = trust
+
+    async def __call__(self, scope, receive, send):
+        token = None
+        if self.trust and scope.get("type") in ("http", "websocket"):
+            for key, value in scope.get("headers") or ():
+                if key == b"x-auth-user" and value:
+                    token = owner_ctx.set(value.decode("latin1"))
+                    break
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if token is not None:
+                owner_ctx.reset(token)
 
 # TODO: Add support for remote access of the webpage with username and password protection
 # This would involve:
@@ -166,7 +198,15 @@ class WebApp:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        
+
+        # Owner-scoping (§4.8): bind the per-request signed-in user (from the
+        # ac_auth edge's X-Auth-User header) so the shared client's history is
+        # scoped per user. Gated by PYPOE_TRUST_FORWARD_AUTH.
+        self.app.add_middleware(
+            _OwnerScopeMiddleware,
+            trust=config.web_trust_forward_auth,
+        )
+
         self.client = PoeChatClient(config=config)
         
         # Setup templates and static files
@@ -182,8 +222,10 @@ class WebApp:
         # Mount static files
         self.app.mount("/static", StaticFiles(directory=str(self.static_dir)), name="static")
         
-        # Security
-        self.security = HTTPBasic() if self.config.web_username else None
+        # Auth is enforced at the ac_auth Caddy edge (§4.8), not here; the old
+        # shared Basic-auth gate is retired. Per-user scoping is applied by
+        # _OwnerScopeMiddleware from the X-Auth-User header.
+        self.security = None
         
         # Active WebSocket connections for real-time chat
         self.active_connections: List[WebSocket] = []
@@ -205,7 +247,7 @@ class WebApp:
             action="start",
             new_value={
                 "version": "2.0.0",
-                "authentication_enabled": bool(self.config.web_username),
+                "authentication_enabled": self.config.web_trust_forward_auth,
                 "cors_enabled": True,
                 "websocket_enabled": True
             },
@@ -561,18 +603,16 @@ class WebApp:
             "The transcript follows."
         )
 
-    def _check_credentials(self, credentials: HTTPBasicCredentials = Depends(HTTPBasic())):
-        if not self.config.web_username:
-            return
-        correct_username = secrets.compare_digest(credentials.username, self.config.web_username)
-        correct_password = secrets.compare_digest(credentials.password, self.config.web_password)
-        if not (correct_username and correct_password):
-            raise HTTPException(
-                status_code=401,
-                detail="Incorrect email or password",
-                headers={"WWW-Authenticate": "Basic"},
-            )
-    
+    def _current_user(self, request) -> Optional[str]:
+        """The signed-in user from the ac_auth edge, when trusted (§4.8).
+
+        Returns the ``X-Auth-User`` header value (the same identity
+        ``_OwnerScopeMiddleware`` scopes history by) or ``None`` when the edge
+        is not trusted / no header is present.
+        """
+        if not self.config.web_trust_forward_auth:
+            return None
+        return request.headers.get("x-auth-user")
 
     def _now_utc(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -804,7 +844,9 @@ class WebApp:
     def _setup_routes(self):
         """Setup all the routes for the web application."""
         
-        dependencies = [Depends(self._check_credentials)] if self.security else []
+        # Auth is enforced at the ac_auth edge (§4.8); no per-route Basic-auth
+        # dependency. Per-user data scoping happens in _OwnerScopeMiddleware.
+        dependencies = []
 
         @self.app.get("/", response_class=HTMLResponse, dependencies=dependencies)
         async def index(request: Request):
@@ -821,6 +863,7 @@ class WebApp:
                     {
                         "conversations": conversations,
                         "available_bots": available_bots,
+                        "current_user": self._current_user(request),
                     },
                 )
             except Exception as e:
@@ -1867,8 +1910,8 @@ class WebApp:
                 config_info = {
                     "backend_version": "2.0.0",
                     "database_path": str(self.config.database_path),
-                    "authentication_enabled": bool(self.config.web_username),
-                    "username": self.config.web_username if self.config.web_username else None,
+                    "authentication_enabled": self.config.web_trust_forward_auth,
+                    "auth_mode": "ac_auth_edge" if self.config.web_trust_forward_auth else "open",
                     "available_bots": available_bots,
                     "total_bots": len(available_bots),
                     "network_interfaces": network_interfaces,
@@ -1902,7 +1945,7 @@ class WebApp:
                         "comprehensive_stats": True,  # Detailed statistics including word counts
                         "dynamic_locking": True,  # Context-aware bot/mode locking
                         "account_monitoring": True,  # API key status and usage tracking
-                        "authentication": bool(self.config.web_username),
+                        "authentication": self.config.web_trust_forward_auth,
                         "websocket_chat": True,
                         "api_only_mode": False,
                         "bot_locking": True,

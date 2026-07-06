@@ -8,8 +8,13 @@ class Config:
     """Configuration class for PyPoe using official Poe API."""
     poe_api_key: str = ""
     database_path: str = ""
-    web_username: str = ""
-    web_password: str = ""
+    web_username: str = ""       # vestigial: Basic-auth retired in favour of the ac_auth edge (§4.8)
+    web_password: str = ""       # vestigial: see web_username
+    # Trust the ``X-Auth-User`` header from the ac_auth Caddy edge as the
+    # signed-in identity (owner-scopes the web UI, §4.8). Leave FALSE until the
+    # web port is only reachable through that edge — otherwise the header is
+    # spoofable on a directly-reachable port. Enable with PYPOE_TRUST_FORWARD_AUTH=true.
+    web_trust_forward_auth: bool = False
     # Auto-download images/videos referenced in assistant replies. Disabled by
     # default so chat-only deployments don't need aiohttp. Enable with
     # PYPOE_ENABLE_MEDIA=true and install the [media] extra.
@@ -30,6 +35,9 @@ class Config:
         self.web_username = os.getenv("PYPOE_WEB_USERNAME", self.web_username)
         self.web_password = os.getenv("PYPOE_WEB_PASSWORD", self.web_password)
         self.enable_media = _parse_bool(os.getenv("PYPOE_ENABLE_MEDIA"), self.enable_media)
+        self.web_trust_forward_auth = _parse_bool(
+            os.getenv("PYPOE_TRUST_FORWARD_AUTH"), self.web_trust_forward_auth
+        )
         self.slack_hide_thinking = _parse_bool(
             os.getenv("PYPOE_SLACK_HIDE_THINKING"),
             self.slack_hide_thinking,

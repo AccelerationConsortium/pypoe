@@ -17,6 +17,12 @@
         <div class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <h2><i class="fas fa-robot"></i> PyPoe Chat</h2>
+                {% if current_user %}
+                <div class="auth-banner" title="Signed in via the lab SSO (ac_auth)"
+                     style="font-size:0.8rem;opacity:0.85;margin:2px 0 6px;display:flex;align-items:center;gap:6px;">
+                    <i class="fas fa-user-circle"></i><span>{{ current_user }}</span>
+                </div>
+                {% endif %}
                 <div class="sidebar-actions">
                     <button id="new-chat-btn" class="btn btn-primary">
                         <i class="fas fa-plus"></i> New Chat

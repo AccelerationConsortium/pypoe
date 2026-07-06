@@ -1,5 +1,6 @@
 import aiosqlite
 import asyncio
+import contextvars
 import uuid
 import json
 import hashlib
@@ -13,6 +14,13 @@ import re
 # transition behaviour until the web UI is gated (§4.8). Distinct from
 # ``owner=None``, which scopes to unowned / legacy rows.
 _UNSCOPED = object()
+
+# Per-request owner for multi-user servers (the web UI, §4.8). A pure-ASGI
+# middleware sets this from the ``X-Auth-User`` header injected by the ac_auth
+# Caddy edge; ``_resolve_owner`` falls back to it when neither a per-call
+# owner nor an instance ``default_owner`` is set. Default ``_UNSCOPED`` means
+# unscoped, so the CLI, Slack, and tests are unaffected.
+owner_ctx = contextvars.ContextVar("pypoe_owner", default=_UNSCOPED)
 
 # ``aiohttp`` is only required when media auto-download is enabled. Import it
 # lazily inside ``_download_media`` so chat-only deploys don't need the extra.
@@ -377,13 +385,19 @@ class HistoryManager:
             return None
 
     def _resolve_owner(self, owner):
-        """Fall back to the instance default when the caller didn't scope.
+        """Resolve the effective owner for a call.
 
-        Per-call ``owner`` (anything other than ``_UNSCOPED``) always wins;
-        otherwise the constructor's ``default_owner`` applies (CLAUDE.local.md
-        §4.9).
+        Precedence: an explicit per-call ``owner`` (anything other than
+        ``_UNSCOPED`` — e.g. Slack) wins; then the instance ``default_owner``
+        (e.g. the CLI's OS user); then the per-request ``owner_ctx`` contextvar
+        (the web UI, set from ``X-Auth-User`` — §4.8). Falls back to
+        ``_UNSCOPED`` (unscoped) when none apply.
         """
-        return self._default_owner if owner is _UNSCOPED else owner
+        if owner is not _UNSCOPED:
+            return owner
+        if self._default_owner is not _UNSCOPED:
+            return self._default_owner
+        return owner_ctx.get()
 
     async def _assert_owner(self, db, conversation_id: str, owner, is_admin: bool) -> None:
         """Raise ``PermissionError`` if ``owner`` is set and mismatches the row.
