@@ -1,4 +1,8 @@
-const PYPOE_BASE = (typeof window !== "undefined" && window.PYPOE_BASE) || "";
+// NB: do NOT declare `const PYPOE_BASE` here — app.js already declares it at
+// top level, and classic <script> tags share one global lexical scope, so a
+// second top-level declaration throws "Identifier 'PYPOE_BASE' has already been
+// declared" and aborts whichever script loads second. Read window.PYPOE_BASE
+// (set by the inline head script) directly instead.
 
 // Status Bar Management
 class StatusBar {
@@ -25,7 +29,7 @@ class StatusBar {
     
     async loadStatus() {
         try {
-            const response = await fetch(PYPOE_BASE + '/api/account/status');
+            const response = await fetch((window.PYPOE_BASE || "") + '/api/account/status');
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             
             this.statusData = await response.json();
