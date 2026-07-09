@@ -89,14 +89,15 @@
             <!-- Global Header - Always visible -->
             <div class="global-header">
                 <div class="header-left">
-                    <!-- Drawer toggle: visible only on narrow screens via CSS.
-                         Opens the conversation-history sidebar; auto-closes on
-                         conversation pick, backdrop click, or Escape. -->
+                    <!-- History toggle: on wide screens collapses/expands the
+                         history panel in place (persisted); on narrow screens
+                         opens/closes it as a drawer (auto-closes on conversation
+                         pick, backdrop click, or Escape). -->
                     <button id="sidebar-toggle" class="sidebar-toggle"
                             type="button"
-                            aria-label="Show conversation history"
+                            aria-label="Toggle conversation history"
                             aria-controls="sidebar"
-                            aria-expanded="false">
+                            aria-expanded="true">
                         <i class="fas fa-bars"></i>
                     </button>
                     <div class="logo-section">

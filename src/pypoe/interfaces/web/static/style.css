@@ -50,7 +50,7 @@
     --shadow-modal:      0 10px 30px rgb(0 0 0 / 0.12);
 
     /* Layout primitives (Phase 2.6) */
-    --sidebar-w:         200px;
+    --sidebar-w:         300px;   /* history panel width (was 200px; +50%) */
     --bot-col-w:         400px;
     --bot-stack-bp:      1100px;   /* break to stacked-columns below this */
 }
@@ -68,11 +68,21 @@ body {
     color: #333;
     height: 100vh;
     overflow: hidden;
+    /* Flex column so the app snaps to the viewport: the shared /auth banner
+       (prepended to <body> when served behind the edge) takes its natural
+       height at the top, and .app-container fills the rest. Without this the
+       rigid height:100vh below would push the app taller than the window and
+       clip the chat input off the bottom once the banner is present. */
+    display: flex;
+    flex-direction: column;
 }
 
 .app-container {
     display: flex;
-    height: 100vh;
+    /* Fill the space left after the banner (and above the fixed status bar,
+       which body's padding-bottom reserves) instead of a fixed 100vh. */
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 /* Left Panel: Sidebar Styles */
@@ -84,6 +94,20 @@ body {
     flex-direction: column;
     border-right: 1px solid #e0e6ed;
     box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+    transition: width 0.2s ease;
+}
+
+/* Click-to-hide: on wide screens the hamburger toggles this collapsed state,
+   sliding the history panel to zero width so the chat fills the window. (On
+   narrow screens the sidebar is a drawer instead — see the @media block; the
+   JS only applies .collapsed when wide, and strips it when switching to a
+   drawer, so the two states never fight.) */
+.sidebar.collapsed {
+    width: 0;
+    min-width: 0;
+    padding: 0;
+    overflow: hidden;
+    border-right: none;
 }
 
 .sidebar-header {
@@ -1026,7 +1050,9 @@ body {
    The hamburger button is hidden by default; the @media block below shows
    it (and the backdrop) only when the sidebar collapses into a drawer. */
 .sidebar-toggle {
-    display: none;
+    /* Always shown now: on wide screens it collapses/expands the history panel
+       in place; on narrow screens it opens/closes the drawer. */
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 32px;

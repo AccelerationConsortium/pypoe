@@ -125,15 +125,25 @@ class PyPoeApp {
         if (this.sidebarBackdrop) {
             this.sidebarBackdrop.addEventListener('click', () => this._closeSidebar());
         }
-        // If the viewport grows past the breakpoint while the drawer is open,
-        // drop the .open class so it doesn't linger when the layout switches
-        // back to permanently-visible mode.
-        const mqHandler = (e) => { if (!e.matches) this._closeSidebar(); };
+        // Keep the two hidden-states from fighting when the layout flips:
+        //  - becoming narrow: strip .collapsed (else the drawer would be 0-width)
+        //  - becoming wide:   drop any open drawer, then restore persisted collapse
+        const mqHandler = (e) => {
+            if (e.matches) {
+                if (this.sidebarEl) this.sidebarEl.classList.remove('collapsed');
+            } else {
+                this._closeSidebar();
+                this._restoreSidebarState();
+            }
+        };
         if (this._narrowMq.addEventListener) {
             this._narrowMq.addEventListener('change', mqHandler);
         } else if (this._narrowMq.addListener) {
             this._narrowMq.addListener(mqHandler);   // Safari < 14
         }
+
+        // Apply any persisted wide-screen collapse on first load.
+        this._restoreSidebarState();
     }
 
     _isNarrow() {
@@ -159,11 +169,33 @@ class PyPoeApp {
     }
 
     _toggleSidebar() {
-        if (this._isSidebarOpen()) {
-            this._closeSidebar();
+        if (this._isNarrow()) {
+            // Narrow: slide the drawer in/out.
+            if (this._isSidebarOpen()) this._closeSidebar();
+            else this._openSidebar();
         } else {
-            this._openSidebar();
+            // Wide: collapse/expand the history panel in place (persisted).
+            this._setCollapsed(!this._isCollapsed());
         }
+    }
+
+    _isCollapsed() {
+        return !!(this.sidebarEl && this.sidebarEl.classList.contains('collapsed'));
+    }
+
+    _setCollapsed(collapsed) {
+        if (!this.sidebarEl) return;
+        this.sidebarEl.classList.toggle('collapsed', collapsed);
+        if (this.sidebarToggle) this.sidebarToggle.setAttribute('aria-expanded', String(!collapsed));
+        try { localStorage.setItem('pypoe.sidebarCollapsed', collapsed ? '1' : '0'); } catch (e) { /* private mode */ }
+    }
+
+    _restoreSidebarState() {
+        // Drawer state (narrow) is never persisted; only the wide-screen
+        // collapse is. Apply it on load and when the layout switches to wide.
+        let persisted = null;
+        try { persisted = localStorage.getItem('pypoe.sidebarCollapsed'); } catch (e) { /* private mode */ }
+        if (!this._isNarrow()) this._setCollapsed(persisted === '1');
     }
     
     async loadInitialData() {
