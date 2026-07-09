@@ -27,6 +27,11 @@ class Config:
     # Where to send an unauthenticated browser (the dashboard hosts the
     # LoginBar, which sets the shared ac_auth_session cookie). Empty => 401.
     web_login_url: str = ""
+    # Canonical host:port to redirect browser navigations to (§4.8), so the
+    # ac_auth_session domain cookie attaches — it is never sent to a raw IP.
+    # Only HTML GETs are redirected; empty => no redirect. Set via
+    # PYPOE_CANONICAL_HOST, e.g. sdl2-server-gaia.tail6a1dd7.ts.net:8006.
+    web_canonical_host: str = ""
     # Auto-download images/videos referenced in assistant replies. Disabled by
     # default so chat-only deployments don't need aiohttp. Enable with
     # PYPOE_ENABLE_MEDIA=true and install the [media] extra.
@@ -57,6 +62,9 @@ class Config:
             "PYPOE_AUTH_SERVICE_BASE", self.web_auth_service_base
         )
         self.web_login_url = os.getenv("PYPOE_LOGIN_URL", self.web_login_url)
+        self.web_canonical_host = os.getenv(
+            "PYPOE_CANONICAL_HOST", self.web_canonical_host
+        )
         self.slack_hide_thinking = _parse_bool(
             os.getenv("PYPOE_SLACK_HIDE_THINKING"),
             self.slack_hide_thinking,

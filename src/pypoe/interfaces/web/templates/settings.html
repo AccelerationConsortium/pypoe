@@ -4,7 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings & Configuration - PyPoe</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <script>window.PYPOE_BASE = "{{ base_path() }}";</script>
+
+    <script src="/auth/banner.js" defer></script>
+
+    <link rel="stylesheet" href="{{ base_path() }}/static/style.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         .settings-container {
@@ -199,7 +203,7 @@
                 <button class="refresh-btn" onclick="refreshSettings()">
                     <i class="fas fa-sync-alt"></i> Refresh
                 </button>
-                <a href="/" class="btn btn-secondary">
+                <a href="{{ base_path() }}/" class="btn btn-secondary">
                     <i class="fas fa-arrow-left"></i> Back to Chat
                 </a>
             </div>
@@ -299,8 +303,8 @@
         async function loadSettings() {
             try {
                 const [configResponse, accountResponse] = await Promise.all([
-                    fetch('/api/config'),
-                    fetch('/api/account/status')
+                    fetch((window.PYPOE_BASE || '') + '/api/config'),
+                    fetch((window.PYPOE_BASE || '') + '/api/account/status')
                 ]);
                 
                 const config = await configResponse.json();
@@ -453,7 +457,7 @@
         }
     </script>
     
-    <script src="/static/status-bar.js"></script>
+    <script src="{{ base_path() }}/static/status-bar.js"></script>
 
     <!-- Status Bar -->
     <div class="status-bar" id="status-bar">

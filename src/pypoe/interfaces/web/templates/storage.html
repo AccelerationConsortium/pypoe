@@ -4,7 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Storage Management - PyPoe</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <script>window.PYPOE_BASE = "{{ base_path() }}";</script>
+
+    <script src="/auth/banner.js" defer></script>
+
+    <link rel="stylesheet" href="{{ base_path() }}/static/style.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
     <style>
         body {
@@ -274,7 +278,7 @@
 </head>
 <body>
     <div class="storage-container">
-        <a href="/" class="back-button">
+        <a href="{{ base_path() }}/" class="back-button">
             <i class="fas fa-arrow-left"></i> Back to Chat
         </a>
         
@@ -393,7 +397,7 @@
         async function loadStorageData() {
             try {
                 showLoading(true);
-                const response = await fetch('/api/storage/stats');
+                const response = await fetch((window.PYPOE_BASE || '') + '/api/storage/stats');
                 if (!response.ok) throw new Error('Failed to load storage data');
                 
                 storageData = await response.json();
@@ -458,7 +462,7 @@
         
         async function loadConversations() {
             try {
-                const response = await fetch('/api/storage/conversations');
+                const response = await fetch((window.PYPOE_BASE || '') + '/api/storage/conversations');
                 if (!response.ok) throw new Error('Failed to load conversations');
                 
                 const conversations = await response.json();
@@ -519,7 +523,7 @@
                 cleanupBtn.disabled = true;
                 cleanupBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cleaning up...';
                 
-                const response = await fetch('/api/storage/cleanup', { method: 'POST' });
+                const response = await fetch((window.PYPOE_BASE || '') + '/api/storage/cleanup', { method: 'POST' });
                 if (!response.ok) throw new Error('Cleanup failed');
                 
                 const result = await response.json();
@@ -545,7 +549,7 @@
             }
             
             try {
-                const response = await fetch(`/api/conversation/${conversationId}`, { method: 'DELETE' });
+                const response = await fetch(`${window.PYPOE_BASE || ''}/api/conversation/${conversationId}`, { method: 'DELETE' });
                 if (!response.ok) throw new Error('Delete failed');
                 
                 const result = await response.json();
@@ -634,7 +638,7 @@
         document.addEventListener('DOMContentLoaded', loadStorageData);
     </script>
     
-    <script src="/static/status-bar.js"></script>
+    <script src="{{ base_path() }}/static/status-bar.js"></script>
 
     <!-- Status Bar -->
     <div class="status-bar" id="status-bar">

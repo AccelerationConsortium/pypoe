@@ -1,3 +1,5 @@
+const PYPOE_BASE = (typeof window !== "undefined" && window.PYPOE_BASE) || "";
+
 class PyPoeApp {
     constructor() {
         this.currentConversationId = null;
@@ -167,7 +169,7 @@ class PyPoeApp {
     async loadInitialData() {
         try {
             // Load conversations for sidebar
-            const response = await fetch('/api/conversations');
+            const response = await fetch(PYPOE_BASE + '/api/conversations');
             this.conversations = await response.json();
             this.renderConversationsSidebar();
             
@@ -184,7 +186,7 @@ class PyPoeApp {
     
     async loadStats() {
         try {
-            const response = await fetch('/api/stats');
+            const response = await fetch(PYPOE_BASE + '/api/stats');
             this.stats = await response.json();
             this.updateStats();
         } catch (error) {
@@ -304,7 +306,7 @@ class PyPoeApp {
     
     async loadConversationMessages(conversationId) {
         try {
-            const response = await fetch(`/api/conversation/${conversationId}/messages`);
+            const response = await fetch(`${PYPOE_BASE}/api/conversation/${conversationId}/messages`);
             const messages = await response.json();
 
             this.messagesContainer.innerHTML = '';
@@ -428,7 +430,7 @@ class PyPoeApp {
         }
         
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/chat/${conversationId}`;
+        const wsUrl = `${protocol}//${window.location.host}${PYPOE_BASE}/ws/chat/${conversationId}`;
         
         console.log('Setting up WebSocket for conversation:', conversationId);
         
@@ -922,7 +924,7 @@ class PyPoeApp {
             }
             saveBtn.disabled = true;
             try {
-                const resp = await fetch(`/api/conversation/${conv.id}`, {
+                const resp = await fetch(`${PYPOE_BASE}/api/conversation/${conv.id}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ debate_topic: next }),
@@ -1237,7 +1239,7 @@ class PyPoeApp {
         if (!confirm('Are you sure you want to delete this conversation?')) return;
         
         try {
-            const response = await fetch(`/api/conversation/${conversationId}`, {
+            const response = await fetch(`${PYPOE_BASE}/api/conversation/${conversationId}`, {
                 method: 'DELETE'
             });
             
@@ -1640,7 +1642,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
-                const response = await fetch('/api/conversation/new', {
+                const response = await fetch(PYPOE_BASE + '/api/conversation/new', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

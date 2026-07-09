@@ -1,3 +1,5 @@
+const PYPOE_BASE = (typeof window !== "undefined" && window.PYPOE_BASE) || "";
+
 // Status Bar Management
 class StatusBar {
     constructor() {
@@ -23,7 +25,7 @@ class StatusBar {
     
     async loadStatus() {
         try {
-            const response = await fetch('/api/account/status');
+            const response = await fetch(PYPOE_BASE + '/api/account/status');
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             
             this.statusData = await response.json();

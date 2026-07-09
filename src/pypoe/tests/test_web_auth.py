@@ -103,3 +103,45 @@ def test_header_edge_mode_trusts_x_auth_user():
         r = await _get(app, "/who", {"x-auth-user": "bob@lab"})
         assert r.json()["owner"] == "bob@lab"
     asyncio.run(go())
+
+
+def test_canonical_host_redirect():
+    async def go():
+        def build(canon):
+            app = FastAPI()
+            app.add_middleware(appmod._CanonicalHostMiddleware, canonical_host=canon)
+
+            @app.get("/who")
+            async def who():
+                return {"ok": True}
+
+            return app
+
+        app = build("canon.example:8006")
+        # HTML GET on a non-canonical host (the raw IP) -> 302 to the canonical
+        # host, path + query preserved.
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://1.2.3.4:8006",
+                                     follow_redirects=False) as c:
+            r = await c.get("/who?x=1", headers={"accept": "text/html"})
+            assert r.status_code == 302
+            assert r.headers["location"] == "http://canon.example:8006/who?x=1"
+            # API/poll traffic (non-HTML) is left untouched.
+            r = await c.get("/who", headers={"accept": "application/json"})
+            assert r.status_code == 200
+        # A request already on the canonical host is not redirected.
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://canon.example:8006",
+                                     follow_redirects=False) as c:
+            r = await c.get("/who", headers={"accept": "text/html"})
+            assert r.status_code == 200
+        # Unset canonical host -> no redirect.
+        app2 = build("")
+        transport = httpx.ASGITransport(app=app2)
+        async with httpx.AsyncClient(transport=transport, base_url="http://1.2.3.4:8006",
+                                     follow_redirects=False) as c:
+            r = await c.get("/who", headers={"accept": "text/html"})
+            assert r.status_code == 200
+
+    asyncio.run(go())

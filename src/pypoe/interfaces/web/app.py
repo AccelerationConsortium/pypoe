@@ -28,6 +28,45 @@ import logging
 _stdlib_logger = logging.getLogger(__name__)
 
 
+# Edge path-prefix (single-edge SSO). When PyPoe's UI is served behind the shared
+# auth edge at ``/pypoe/`` (Caddy ``handle_path /pypoe/* { header_up
+# X-Forwarded-Prefix /pypoe }``), Caddy strips the prefix off the path but tells
+# us via ``X-Forwarded-Prefix`` so we can put it back on the URLs the browser
+# sees (PyPoe's own assets / links / API / WS). Absent header (direct :8006
+# access) => empty prefix => URLs are unprefixed exactly as before. The shared
+# ``/auth/*`` surface is NOT prefixed — it lives at the edge root. Exposed to
+# templates as the Jinja global ``base_path()`` and to browser JS as
+# ``window.PYPOE_BASE``.
+import contextvars
+
+_edge_prefix_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "pypoe_edge_prefix", default=""
+)
+
+
+class _ForwardedPrefixMiddleware:
+    """Bind ``X-Forwarded-Prefix`` into ``_edge_prefix_var`` for the request."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            prefix = ""
+            for key, value in scope.get("headers", []):
+                if key == b"x-forwarded-prefix":
+                    prefix = "/" + value.decode("latin1").strip().strip("/")
+                    prefix = "" if prefix == "/" else prefix
+                    break
+            token = _edge_prefix_var.set(prefix)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _edge_prefix_var.reset(token)
+        else:
+            await self.app(scope, receive, send)
+
+
 # Paths that stay reachable even when cookie-verify gating is on: the
 # STATUS_SPEC probes the aggregator polls, static assets, and the Kuma
 # webhook. Everything else (the UI + /api/*) is gated in cookie-verify mode.
@@ -189,6 +228,51 @@ class _OwnerScopeMiddleware:
         })
         await send({"type": "http.response.body", "body": body})
 
+
+class _CanonicalHostMiddleware:
+    """Redirect browser navigations to the canonical MagicDNS host (§4.8).
+
+    The ac_auth_session cookie is ``Domain``-scoped (e.g. ``tail6a1dd7.ts.net``)
+    and is therefore **never sent to a raw IP**. If a user reaches PyPoe by IP,
+    a 302 to the same path on ``canonical_host`` bounces them to the hostname,
+    where the browser attaches the cookie on the follow-up request. Only HTML
+    ``GET`` navigations are redirected — API/health/status/websocket and every
+    non-GET pass untouched, so IP-based automation/polling still works. No-op
+    when ``canonical_host`` is unset. Registered OUTERMOST so it runs before
+    the auth middleware.
+    """
+
+    def __init__(self, app, canonical_host: str = ""):
+        self.app = app
+        self.canonical_host = (canonical_host or "").strip()
+
+    async def __call__(self, scope, receive, send):
+        if (not self.canonical_host or scope.get("type") != "http"
+                or scope.get("method") != "GET"):
+            await self.app(scope, receive, send)
+            return
+        host = ""
+        accept = ""
+        for key, value in scope.get("headers") or ():
+            if key == b"host":
+                host = value.decode("latin1")
+            elif key == b"accept":
+                accept = value.decode("latin1")
+        if "text/html" in accept and host and host != self.canonical_host:
+            scheme = scope.get("scheme", "http")
+            target = f"{scheme}://{self.canonical_host}{scope.get('path', '')}"
+            qs = scope.get("query_string", b"")
+            if qs:
+                target += "?" + qs.decode("latin1")
+            await send({
+                "type": "http.response.start",
+                "status": 302,
+                "headers": [(b"location", target.encode("latin1"))],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+        await self.app(scope, receive, send)
+
 # TODO: Add support for remote access of the webpage with username and password protection
 # This would involve:
 # - Adding authentication middleware (e.g., HTTP Basic Auth, session-based auth, or JWT)
@@ -341,6 +425,18 @@ class WebApp:
             login_url=config.web_login_url,
         )
 
+        # Added AFTER the auth middleware so it is OUTERMOST and runs first: a
+        # browser hitting the raw IP is bounced to the MagicDNS host (where the
+        # ac_auth_session domain cookie attaches) before the auth check runs.
+        self.app.add_middleware(
+            _CanonicalHostMiddleware,
+            canonical_host=config.web_canonical_host,
+        )
+
+        # Added last => OUTERMOST: capture the edge path-prefix before any
+        # template renders, so {{ base_path() }} / window.PYPOE_BASE are correct.
+        self.app.add_middleware(_ForwardedPrefixMiddleware)
+
         self.client = PoeChatClient(config=config)
         
         # Setup templates and static files
@@ -352,7 +448,11 @@ class WebApp:
         self.static_dir.mkdir(parents=True, exist_ok=True)
         
         self.templates = Jinja2Templates(directory=str(self.templates_dir))
-        
+        # Single-edge SSO: templates prefix PyPoe's own URLs with {{ base_path() }}
+        # so they resolve under /pypoe/ when served behind the edge (empty when
+        # hit directly on :8006). See _ForwardedPrefixMiddleware.
+        self.templates.env.globals["base_path"] = lambda: _edge_prefix_var.get("")
+
         # Mount static files
         self.app.mount("/static", StaticFiles(directory=str(self.static_dir)), name="static")
         
