@@ -85,6 +85,39 @@ block on the `/pypoe` Caddy route (like `/agente` and `/analytica` have) and/or
 turn on PyPoe's own cookie-verify mode (`PYPOE_AUTH_VERIFY_COOKIE=true`); the
 React app would trust the edge-injected `X-Auth-User`, same as agente.
 
+## Parallel deployment (keep both up during the migration)
+
+Build the new app **alongside** the current one (a "strangler" migration) so the
+working PyPoe is never touched until cutover, and rollback is a one-line routing
+flip.
+
+- **New service, new port.** Run the React build as a second service,
+  `pypoe-web-next` on **:8007**, from the same repo. It's the same FastAPI app
+  serving the React `dist/` instead of the Jinja templates.
+- **Same database.** Both point at `~/.pypoe/single_webchat_history.db`, so
+  conversations are shared between old and new. SQLite (WAL) handles two
+  processes fine at chat traffic; just don't drive heavy concurrent writes.
+- **Old stays put.** PyPoe on **:8006** at edge `/pypoe/`; the dashboard tile
+  keeps polling `:8006/status`. Live experience unchanged.
+- **New gets a preview path.** Edge `/pypoe-next/` → `:8007`, banner-only (no
+  `forward_auth`, same as `/pypoe`). Build the React app with
+  `base: '/pypoe-next/'` so it works behind that path with the banner.
+- **Cutover.** When ready: rebuild React with `base: '/pypoe/'`, flip the edge
+  `/pypoe/` route from `:8006` to `:8007`, retire the old service.
+  **Rollback = flip the route back** — instant.
+
+Gotchas:
+- `base` is baked in at build time, so preview (`/pypoe-next/`) vs final
+  (`/pypoe/`) means one rebuild at cutover.
+- Each edge path change is a `sudo cp Caddyfile + reload caddy` (adding
+  `/pypoe-next/`, then flipping `/pypoe/`).
+- Keep the dashboard tile on `:8006` until cutover; optionally add a temporary
+  `pypoe_web_next` → `:8007/status` entry in `equipment.yaml` to watch the new
+  one too.
+- **Keep the API identical** for the migration — the `:8007` instance is the
+  same Python backend serving `dist/`; only the frontend changes. The strangler
+  flip then stays a pure routing change.
+
 ## Rough step order
 
 1. Scaffold a Vite React app (mirror agente's config: `base: '/pypoe/'`, API/WS
