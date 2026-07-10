@@ -9,7 +9,7 @@
 
     <script src="/auth/banner.js" defer></script>
 
-    <link rel="stylesheet" href="{{ base_path() }}/static/style.css">
+    <link rel="stylesheet" href="{{ base_path() }}/static/style.css?v={{ asset_v }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
     <style>
         body {
@@ -639,7 +639,7 @@
         document.addEventListener('DOMContentLoaded', loadStorageData);
     </script>
     
-    <script src="{{ base_path() }}/static/status-bar.js"></script>
+    <script src="{{ base_path() }}/static/status-bar.js?v={{ asset_v }}"></script>
 
     <!-- Status Bar -->
     <div class="status-bar" id="status-bar">

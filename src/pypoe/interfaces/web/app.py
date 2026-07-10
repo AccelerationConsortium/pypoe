@@ -452,6 +452,18 @@ class WebApp:
         # so they resolve under /pypoe/ when served behind the edge (empty when
         # hit directly on :8006). See _ForwardedPrefixMiddleware.
         self.templates.env.globals["base_path"] = lambda: _edge_prefix_var.get("")
+        # Cache-busting: a token from the static files' mtimes, computed once at
+        # startup and appended as ?v=<token> to /static/* URLs in the templates.
+        # A deploy changes the mtimes -> new token -> browsers fetch fresh
+        # JS/CSS instead of serving a stale cached copy; unchanged files keep
+        # the same token so normal caching still applies. (StaticFiles sends no
+        # Cache-Control, so without this a browser can cling to an old asset.)
+        try:
+            _mtimes = [p.stat().st_mtime for p in self.static_dir.glob("*") if p.is_file()]
+            _asset_v = str(int(max(_mtimes))) if _mtimes else "0"
+        except OSError:
+            _asset_v = "0"
+        self.templates.env.globals["asset_v"] = _asset_v
 
         # Mount static files
         self.app.mount("/static", StaticFiles(directory=str(self.static_dir)), name="static")
