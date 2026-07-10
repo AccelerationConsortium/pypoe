@@ -1,0 +1,55 @@
+# PyPoe Web UI — React preview (parallel-deploy migration).
+#
+# Runs the new React UI as a SECOND service on :8007 alongside the live Jinja
+# UI (pypoe-web.service on :8006), sharing the same database. It serves the
+# built frontend (frontend/dist) via the SPA wrapper. Behind the edge it is
+# reached at /pypoe-next/ (banner-only, not enforced). See
+# docs/REACT_UI_MIGRATION.md.
+#
+# Prereq: build the frontend for the preview base first:
+#   cd /home/sdl2/caoyang/pypoe/frontend && npm ci && VITE_BASE=/pypoe-next/ npm run build
+#
+# Install:
+#   sudo cp scripts/setup/pypoe-web-next.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pypoe-web-next.service
+#
+# At cutover, rebuild the frontend with VITE_BASE=/pypoe/ and flip the edge
+# /pypoe/ route to :8007, then retire pypoe-web.service.
+
+[Unit]
+Description=PyPoe Web UI (React preview, :8007)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sdl2
+Group=sdl2
+WorkingDirectory=/home/sdl2/caoyang/pypoe
+Environment=PYTHONPATH=/home/sdl2/caoyang/pypoe/src
+Environment=PATH=/home/sdl2/pyenv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYPOE_SPA_DIST=/home/sdl2/caoyang/pypoe/frontend/dist
+EnvironmentFile=/home/sdl2/caoyang/pypoe/.env
+ExecStart=/bin/bash -lc 'exec /home/sdl2/caoyang/pypoe/.venv/bin/uvicorn pypoe.interfaces.web.spa_app:get_app --factory --host "100.64.254.6" --port "8007"'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+SyslogIdentifier=pypoe-web-next
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/home/sdl2/caoyang/pypoe /home/sdl2/.pypoe
+
+[Install]
+WantedBy=multi-user.target
