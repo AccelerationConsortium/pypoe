@@ -70,7 +70,7 @@ class _ForwardedPrefixMiddleware:
 # Paths that stay reachable even when cookie-verify gating is on: the
 # STATUS_SPEC probes the aggregator polls, static assets, and the Kuma
 # webhook. Everything else (the UI + /api/*) is gated in cookie-verify mode.
-_PUBLIC_EXACT = {"/health", "/status", "/", "/favicon.ico"}
+_PUBLIC_EXACT = {"/health", "/status", "/", "/favicon.ico", "/kuma/status"}
 _PUBLIC_PREFIXES = ("/static/", "/alerts/", "/control/")
 
 
@@ -477,6 +477,8 @@ class WebApp:
         self.active_connections: List[WebSocket] = []
         self._status_cache: Optional[Dict[str, Any]] = None
         self._status_cache_expires_at = 0.0
+        self._kuma_status_cache: Optional[Dict[str, Any]] = None
+        self._kuma_status_cache_expires_at = 0.0
         self._claim: Optional[Dict[str, Any]] = None
         
         self._setup_routes()
@@ -1079,6 +1081,113 @@ class WebApp:
         self._status_cache_expires_at = now + 30.0
         return payload
 
+    # Kuma heartbeat status ints → (connected, state) for ComponentStatus.
+    _KUMA_BEAT_STATES = {
+        0: (False, "down"),
+        1: (True, "up"),
+        2: (False, "pending"),
+        3: (True, "maintenance"),
+    }
+
+    async def _kuma_status_payload(self) -> Dict[str, Any]:
+        """STATUS_SPEC v1.0 envelope for Uptime Kuma, gateway-fronted by PyPoe.
+
+        Registered in the lab's equipment.yaml as ``uptime_kuma`` with
+        ``status_path: /kuma/status``. Per-monitor state comes from Kuma's
+        unauthenticated status-page API (slug ``PYPOE_KUMA_STATUS_SLUG``,
+        default ``lab``). Per the gateway rule (STATUS_SPEC §2.1), Kuma
+        being unreachable reports ``equipment_status: "unknown"`` — never
+        ``error``.
+        """
+        import os
+        import re
+
+        now = time.monotonic()
+        if self._kuma_status_cache is not None and now < self._kuma_status_cache_expires_at:
+            cached = dict(self._kuma_status_cache)
+            cached["device_time"] = self._now_utc().isoformat()
+            return cached
+
+        kuma_url = os.environ.get("PYPOE_KUMA_URL", "http://127.0.0.1:8005").rstrip("/")
+        slug = os.environ.get("PYPOE_KUMA_STATUS_SLUG", "lab")
+        device_time = self._now_utc()
+
+        components: Dict[str, Any] = {}
+        metrics: Dict[str, Any] = {}
+        message: Optional[str] = None
+        equipment_status = "ready"
+
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                page_resp = await client.get(f"{kuma_url}/api/status-page/{slug}")
+                page_resp.raise_for_status()
+                beats_resp = await client.get(
+                    f"{kuma_url}/api/status-page/heartbeat/{slug}"
+                )
+                beats_resp.raise_for_status()
+            page = page_resp.json()
+            heartbeats = beats_resp.json().get("heartbeatList", {})
+
+            monitors = [
+                m
+                for group in page.get("publicGroupList", [])
+                for m in group.get("monitorList", [])
+            ]
+            up = total = 0
+            down_names = []
+            for monitor in monitors:
+                beats = heartbeats.get(str(monitor.get("id"))) or []
+                last = beats[-1] if beats else None
+                if last is None:
+                    connected, state = False, "pending"
+                else:
+                    connected, state = self._KUMA_BEAT_STATES.get(
+                        last.get("status"), (False, "unknown")
+                    )
+                name = monitor.get("name") or f"monitor_{monitor.get('id')}"
+                key = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+                components[key] = self._component(connected, state, name)
+                total += 1
+                if connected:
+                    up += 1
+                elif state == "down":
+                    down_names.append(name)
+            metrics["monitors_up"] = self._metric(up, "count")
+            metrics["monitors_total"] = self._metric(total, "count")
+            if down_names:
+                equipment_status = "degraded"
+                message = f"{len(down_names)}/{total} monitors down: {', '.join(down_names)}"
+        except Exception as exc:
+            # Gateway-fronted unreachable → "unknown", never "error" (§2.1).
+            equipment_status = "unknown"
+            message = f"Uptime Kuma unreachable: {exc}"
+
+        payload = {
+            "protocol_version": "1.0",
+            "equipment_id": "uptime_kuma",
+            "equipment_name": "Uptime Kuma (alert watchdog)",
+            "equipment_kind": "other",
+            "equipment_version": None,
+            "host": socket.gethostname(),
+            "equipment_status": equipment_status,
+            "message": message,
+            "required_actions": [],
+            "device_time": device_time.isoformat(),
+            "uptime_seconds": None,
+            "components": components,
+            "metrics": metrics,
+            "last_error": None,
+            "details": {
+                "status_page": f"{kuma_url}/status/{slug}",
+                "gateway": "pypoe_web",
+            },
+        }
+        self._kuma_status_cache = dict(payload)
+        self._kuma_status_cache_expires_at = now + 15.0
+        return payload
+
     def _maybe_register_lab_alert_routes(self) -> None:
         """Mount ``POST /alerts/kuma`` if the lab extra is installed AND
         ``LAB_API_URL`` / ``PYPOE_ENABLE_LAB`` is set in the environment.
@@ -1143,6 +1252,11 @@ class WebApp:
         async def lab_status():
             """STATUS_SPEC v1.1 status endpoint for dashboard monitoring."""
             return JSONResponse(await self._status_payload())
+
+        @self.app.get("/kuma/status")
+        async def kuma_status():
+            """STATUS_SPEC v1.0 envelope for Uptime Kuma (gateway-fronted)."""
+            return JSONResponse(await self._kuma_status_payload())
 
         @self.app.post("/control/claim")
         async def claim(request: ClaimRequest):
