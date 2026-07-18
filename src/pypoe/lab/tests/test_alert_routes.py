@@ -30,8 +30,8 @@ def _mk_app(monkeypatch, *, claude_output: str = "Investigation summary"):
         )
         return f"ts-{len(posted)}"
 
-    async def fake_run_claude(monitor, msg, consult_models=()):
-        investigations.append((monitor, msg, consult_models))
+    async def fake_run_claude(prompt):
+        investigations.append(prompt)
         return claude_output
 
     monkeypatch.setattr(alert_routes, "_post_slack", fake_post_slack)
@@ -107,14 +107,14 @@ def test_kuma_webhook_down_posts_investigating_then_summary(monkeypatch):
     assert posted[0]["thread_ts"] is None
 
     # The background task should have run after the TestClient context
-    # closed (which awaits all pending tasks). The third element is the
-    # consult_models tuple captured from the loaded config (defaults).
+    # closed (which awaits all pending tasks). The captured value is the
+    # fully built prompt, which must carry the monitor, the message, and
+    # the default consult models (ConsultSection — see pypoe.lab.config).
     assert len(investigations) == 1
-    monitor, msg_text, consult_models = investigations[0]
-    assert monitor == "aggregator"
-    assert msg_text == "connection refused"
-    # Defaults from ConsultSection — see pypoe.lab.config.
-    assert consult_models == ("GPT-5.5", "Claude-Opus-4.7")
+    prompt = investigations[0]
+    assert "aggregator" in prompt
+    assert "connection refused" in prompt
+    assert "GPT-5.5" in prompt and "Claude-Opus-4.7" in prompt
     assert len(posted) == 2
     threaded = posted[1]
     assert threaded["thread_ts"] == "ts-1"  # threaded under the first message
@@ -158,6 +158,93 @@ def test_kuma_webhook_truncates_long_claude_output(monkeypatch):
     assert len(threaded["text"]) <= alert_routes._MAX_CLAUDE_OUTPUT_CHARS
 
 
+def test_device_alert_down_posts_investigating_then_summary(monkeypatch):
+    app, posted, investigations = _mk_app(
+        monkeypatch, claude_output="Device diagnosis"
+    )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/alerts/device",
+            json={
+                "device_id": "plateloc",
+                "event": "error",
+                "state": "error",
+                "message": "COM timeout",
+                "last_error": {"code": "com_other", "message": "COM timeout"},
+            },
+        )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["action"] == "investigating"
+    assert body["device"] == "plateloc"
+
+    assert "plateloc" in posted[0]["text"]
+    assert "ERROR" in posted[0]["text"]
+    assert "Investigating" in posted[0]["text"]
+
+    # Prompt is device-focused: targets the device, carries last_error.
+    assert len(investigations) == 1
+    prompt = investigations[0]
+    assert 'get_equipment_status("plateloc")' in prompt
+    assert "com_other" in prompt
+
+    threaded = posted[1]
+    assert threaded["thread_ts"] == "ts-1"
+    assert "Device diagnosis" in threaded["text"]
+
+
+def test_device_alert_storm_mentions_other_devices(monkeypatch):
+    app, posted, investigations = _mk_app(monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/alerts/device",
+            json={
+                "device_id": "ot2_hte",
+                "event": "unreachable",
+                "message": "3 devices down in one sweep",
+                "devices": ["plateloc", "cytation_5"],
+            },
+        )
+    assert resp.status_code == 202
+    assert "(+2 more)" in posted[0]["text"]
+    prompt = investigations[0]
+    assert "plateloc" in prompt and "cytation_5" in prompt
+
+
+def test_device_alert_recovery_posts_recovery_only(monkeypatch):
+    app, posted, investigations = _mk_app(monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/alerts/device",
+            json={
+                "device_id": "plateloc",
+                "event": "recovered",
+                "message": "back to ready",
+            },
+        )
+    assert resp.status_code == 202
+    assert resp.json()["action"] == "recovered"
+    assert len(posted) == 1
+    assert "recovered" in posted[0]["text"]
+    assert investigations == []
+
+
+def test_device_alert_rejects_unknown_event(monkeypatch):
+    app, posted, investigations = _mk_app(monkeypatch)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/alerts/device",
+            json={"device_id": "plateloc", "event": "exploded"},
+        )
+    assert resp.status_code == 422
+    assert posted == []
+    assert investigations == []
+
+
 def test_concurrency_bound_is_respected(monkeypatch):
     """Two simultaneous alerts shouldn't run more than `max_concurrent` claude
     subprocesses in parallel. Verified via observable peak concurrency."""
@@ -170,7 +257,7 @@ def test_concurrency_bound_is_respected(monkeypatch):
         async def fake_post_slack(channel, text, thread_ts=None):
             return "ts"
 
-        async def fake_run_claude(monitor, msg, consult_models=()):
+        async def fake_run_claude(prompt):
             async with peak["lock"]:
                 peak["current"] += 1
                 peak["value"] = max(peak["value"], peak["current"])

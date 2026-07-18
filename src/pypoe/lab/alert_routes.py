@@ -55,6 +55,23 @@ Steps:
    `details.claimed_by`.
 """
 
+_DEVICE_PROMPT_HEAD = """\
+A lab device alert just fired: `{device_id}` reported `{event}`
+(message: {msg}).{last_error_line}{devices_line}
+
+You have a `pypoe-lab` MCP server registered. Use it to investigate.
+
+Steps:
+
+1. Call `get_equipment_status("{device_id}")` and
+   `recent_events("{device_id}")`. Inspect `status.equipment_status`,
+   `status.message`, `status.last_error`, and `details.claimed_by`.
+2. Call `device_uptime("{device_id}")` and `aggregator_health()` for
+   context. If other devices are listed as affected above, check each
+   of them briefly with `get_equipment_status()` — simultaneous failures
+   usually mean a shared cause (network, gateway, power).
+"""
+
 _CONSULT_BLOCK = """\
 3. Consult each Poe model below for an independent second opinion.
    For EACH model, call:
@@ -119,6 +136,38 @@ def _build_investigation_prompt(
     consultation step, no synthesis instructions).
     """
     head = _INVESTIGATION_PROMPT_HEAD.format(monitor=monitor, msg=msg)
+    return _finish_prompt(head, consult_models)
+
+
+def _build_device_prompt(
+    device_id: str,
+    event: str,
+    msg: str,
+    consult_models: tuple[str, ...],
+    *,
+    last_error: Optional[dict] = None,
+    devices: Optional[list[str]] = None,
+) -> str:
+    """Compose a device-focused investigation prompt (POST /alerts/device)."""
+    last_error_line = (
+        f"\nDevice-reported last_error: {last_error}" if last_error else ""
+    )
+    devices_line = (
+        f"\nOther devices affected in the same sweep: {', '.join(devices)}"
+        if devices
+        else ""
+    )
+    head = _DEVICE_PROMPT_HEAD.format(
+        device_id=device_id,
+        event=event,
+        msg=msg,
+        last_error_line=last_error_line,
+        devices_line=devices_line,
+    )
+    return _finish_prompt(head, consult_models)
+
+
+def _finish_prompt(head: str, consult_models: tuple[str, ...]) -> str:
     if consult_models:
         models_block = "\n".join(f"     - {m}" for m in consult_models)
         return head + _CONSULT_BLOCK.format(models_block=models_block) + _INVESTIGATION_PROMPT_TAIL_CONSULT
@@ -140,6 +189,25 @@ class KumaAlert(BaseModel):  # type: ignore[misc]
     heartbeat: Optional[KumaHeartbeat] = None
     monitor: Optional[KumaMonitor] = None
     msg: Optional[str] = None
+
+
+#: Device-alert events the aggregator-side notifier may send. ``recovered``
+#: posts a one-liner; everything else triggers an investigation.
+DEVICE_ALERT_EVENTS = ("unreachable", "error", "e_stop", "degraded", "recovered")
+
+
+class DeviceAlert(BaseModel):  # type: ignore[misc]
+    """Payload for ``POST /alerts/device`` (sent by the lab aggregator's
+    alert notifier, not by Uptime Kuma)."""
+
+    device_id: str
+    event: str  # one of DEVICE_ALERT_EVENTS
+    state: Optional[str] = None
+    message: Optional[str] = None
+    last_error: Optional[dict] = None
+    #: For storm-collapsed alerts: the other device ids that tripped in
+    #: the same sweep (device_id carries the first one).
+    devices: Optional[list[str]] = None
 
 
 def register_alert_routes(
@@ -201,19 +269,71 @@ def register_alert_routes(
         # takes effect on the next alert without a process restart, if the
         # config singleton has been reload_config()-ed).
         consult_models = cfg.consult.models if cfg.consult.enabled else ()
+        prompt = _build_investigation_prompt(monitor_name, msg, consult_models)
         asyncio.create_task(
             _investigate(
-                monitor_name=monitor_name,
-                msg=msg,
+                prompt=prompt,
                 channel=channel,
                 thread_ts=thread_ts,
                 semaphore=semaphore,
-                consult_models=consult_models,
             )
         )
         return {
             "action": "investigating",
             "monitor": monitor_name,
+            "thread_ts": thread_ts,
+        }
+
+    @router.post("/device", status_code=202)
+    async def device_alert(payload: DeviceAlert) -> dict:
+        if payload.event not in DEVICE_ALERT_EVENTS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"event must be one of {DEVICE_ALERT_EVENTS}",
+            )
+        msg = payload.message or ""
+
+        if payload.event == "recovered":
+            try:
+                await _post_slack(
+                    channel,
+                    f":white_check_mark: *{payload.device_id}* recovered — {msg}".strip(),
+                )
+            except Exception as exc:
+                logger.error("Failed to post device recovery alert: %s", exc)
+            return {"action": "recovered", "device": payload.device_id}
+
+        others = f" (+{len(payload.devices)} more)" if payload.devices else ""
+        try:
+            thread_ts = await _post_slack(
+                channel,
+                f":rotating_light: *{payload.device_id}*{others} "
+                f"{payload.event.upper()} — {msg} :mag: Investigating…",
+            )
+        except Exception as exc:
+            logger.error("Failed to post device alert: %s", exc)
+            thread_ts = None
+
+        consult_models = cfg.consult.models if cfg.consult.enabled else ()
+        prompt = _build_device_prompt(
+            payload.device_id,
+            payload.event,
+            msg,
+            consult_models,
+            last_error=payload.last_error,
+            devices=payload.devices,
+        )
+        asyncio.create_task(
+            _investigate(
+                prompt=prompt,
+                channel=channel,
+                thread_ts=thread_ts,
+                semaphore=semaphore,
+            )
+        )
+        return {
+            "action": "investigating",
+            "device": payload.device_id,
             "thread_ts": thread_ts,
         }
 
@@ -228,16 +348,14 @@ def register_alert_routes(
 
 async def _investigate(
     *,
-    monitor_name: str,
-    msg: str,
+    prompt: str,
     channel: str,
     thread_ts: Optional[str],
     semaphore: asyncio.Semaphore,
-    consult_models: tuple[str, ...] = (),
 ) -> None:
     async with semaphore:
         try:
-            output = await _run_claude(monitor_name, msg, consult_models)
+            output = await _run_claude(prompt)
         except Exception as exc:
             output = f":x: Investigation failed to start: {exc}"
         if len(output) > _MAX_CLAUDE_OUTPUT_CHARS:
@@ -248,16 +366,17 @@ async def _investigate(
             logger.error("Failed to post investigation reply: %s", exc)
 
 
-async def _run_claude(
-    monitor: str, msg: str, consult_models: tuple[str, ...] = ()
-) -> str:
+async def _run_claude(prompt: str) -> str:
     """Run ``claude -p <prompt>`` and return stdout (or a useful error)."""
-    prompt = _build_investigation_prompt(monitor, msg, consult_models)
     try:
         proc = await asyncio.create_subprocess_exec(
             "claude",
             "-p",
             prompt,
+            # Headless -p runs cannot grant permissions interactively, so the
+            # lab MCP tools must be pre-allowed or every call is refused.
+            "--allowedTools",
+            "mcp__pypoe-lab__*",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
