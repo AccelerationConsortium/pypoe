@@ -254,7 +254,9 @@ instant and free.
 ### From Uptime Kuma
 
 Once `pypoe web` is running with `LAB_API_URL` set, configure Kuma to
-POST its default JSON payload to `http://<host>:8000/alerts/kuma`.
+POST its default JSON payload to `http://<host>:<port>/alerts/kuma`
+(a webhook-type notification; on the current deployment that is
+`http://100.64.254.6:8006/alerts/kuma`).
 
 **On a DOWN alert** (`heartbeat.status == 0`):
 
@@ -291,6 +293,76 @@ all non-healthy devices via `list_equipment()`.
 **Auth:** the `claude` CLI authenticates with **Claude Team** OAuth
 (run `claude` once on the host), so no Anthropic API key is needed in
 the PyPoe environment. `consult_poe` uses your `POE_API_KEY`.
+
+**Headless permissions (load-bearing).** Two things must be true on
+the host or every investigation replies "my tools are unavailable":
+
+1. The `pypoe-lab` MCP server is registered for the `claude` CLI in
+   the directory `pypoe web` runs from (its `WorkingDirectory`):
+
+   ```bash
+   cd /path/to/pypoe
+   claude mcp add pypoe-lab -e LAB_API_URL=http://127.0.0.1:8001 -- \
+       /path/to/pypoe/.venv/bin/pypoe lab-mcp
+   ```
+
+2. The spawned `claude -p` is pre-allowed to call those tools —
+   headless runs cannot grant permissions interactively. The webhook
+   passes `--allowedTools "mcp__pypoe-lab__*"` for exactly this
+   reason; if you rename the MCP server, update that flag in
+   `lab/alert_routes.py` to match.
+
+### From the lab aggregator (device alerts)
+
+Uptime Kuma watches the *platform services*; the *devices* are
+watched by the lab aggregator itself, which already polls every
+device. Its `alert_notifier` (in `ac-organic-lab`, `api/app/
+alert_notifier.py`, enabled by `PYPOE_ALERT_URL` in that repo's
+`.env`) POSTs to PyPoe's second webhook:
+
+```
+POST /alerts/device
+{"device_id": "plateloc", "event": "error",
+ "state": "error", "message": "...", "last_error": {...},
+ "devices": ["cytation_5", ...]}        # only on storm-collapsed alerts
+```
+
+Events: `unreachable` | `error` | `e_stop` | `degraded` | `recovered`.
+Same Slack channel and investigation machinery as the Kuma path, but
+the prompt is **device-focused** — Claude goes straight to
+`get_equipment_status("<device_id>")`, `recent_events`, and
+`device_uptime` instead of a fleet-wide sweep, and the device's
+`last_error` rides along in the prompt. `recovered` posts a
+`:white_check_mark:` one-liner, no investigation.
+
+The debounce/cooldown/storm rules (2-sweep sustained unreachable,
+immediate error/e_stop, 30-min per-device cooldown, ≥3 devices in one
+sweep collapse into a single alert) all live on the aggregator side —
+PyPoe just renders and investigates whatever arrives.
+
+### Kuma tile on the lab dashboard (`/kuma/status`)
+
+PyPoe also **gateway-fronts Uptime Kuma** for the dashboard (the same
+pattern kasa-tapo-services uses for cameras): `GET /kuma/status`
+serves a STATUS_SPEC v1.0 envelope with one component per Kuma
+monitor, built from Kuma's public status-page API
+(`PYPOE_KUMA_URL`, slug `PYPOE_KUMA_STATUS_SLUG`, default `lab`) and
+cached for 15 s. Any monitor down → `degraded` (message names them);
+Kuma unreachable → `unknown` per STATUS_SPEC §2.1. The lab's
+`equipment.yaml` registers this as `uptime_kuma` under Services.
+
+Related: when `PYPOE_KUMA_URL` is set, PyPoe's own `/status` gains a
+required `uptime_kuma` component — Kuma alerts when PyPoe dies, the
+dashboard shows when Kuma dies; neither can die silently.
+
+Kuma deployment notes (dashboard host): docker, **host networking**
+(`--network host -e UPTIME_KUMA_PORT=8005`, volume `uptime-kuma`) —
+bridge networking cannot reach the loopback/Tailscale-bound services.
+Admin credentials live in `~/.pypoe/uptime-kuma-admin.credentials`.
+When adding monitors for auth-gated services, probe an endpoint that
+answers plainly (e.g. the auth sidecar's `/status`) — Kuma's checks
+send browser-style `Accept` headers, so login-redirecting endpoints
+302 → 404 and flap the monitor.
 
 ### From the command line
 
