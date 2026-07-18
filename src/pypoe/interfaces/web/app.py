@@ -1025,6 +1025,26 @@ class WebApp:
         details["claimed_by"] = self._claimed_by()
 
         required_components = ["web_ui", "poe_api", "storage", "internet", "tailscale"]
+
+        # Mutual watchdog: Uptime Kuma alerts when PyPoe is down; PyPoe's
+        # /status (polled by the lab dashboard) surfaces Kuma being down.
+        # Enabled by setting PYPOE_KUMA_URL (e.g. http://127.0.0.1:8005).
+        import os
+        kuma_url = os.environ.get("PYPOE_KUMA_URL")
+        if kuma_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(kuma_url)
+            kuma_ok, kuma_ms, kuma_error = await asyncio.to_thread(
+                self._tcp_check, parsed.hostname or "127.0.0.1", parsed.port or 80
+            )
+            components["uptime_kuma"] = self._component(
+                kuma_ok,
+                "reachable" if kuma_ok else "unreachable",
+                kuma_error if not kuma_ok else None,
+            )
+            if kuma_ms is not None:
+                metrics["kuma_latency"] = self._metric(kuma_ms, "ms")
+            required_components.append("uptime_kuma")
         required_ok = all(components[key]["connected"] for key in required_components)
         if required_ok:
             equipment_status = "ready"
