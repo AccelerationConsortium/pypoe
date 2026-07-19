@@ -40,8 +40,12 @@ Self-driving Lab. With `pip install -e ".[lab]"` you additionally get:
 - `pypoe lab-status` — one-shot aggregator health summary.
 - `/lab-*` Slack slash commands (auto-registered on `pypoe slack` when
   `LAB_API_URL` is set).
-- `POST /alerts/kuma` webhook (auto-mounted on `pypoe web` under the
-  same condition) for Uptime Kuma alert investigation.
+- `POST /alerts/kuma` + `POST /alerts/device` webhooks (auto-mounted on
+  `pypoe web` under the same condition): Uptime Kuma service alerts and
+  aggregator-pushed device alerts, both posted to Slack with a threaded
+  `claude -p` investigation.
+- `GET /kuma/status` — a STATUS_SPEC envelope gateway-fronting Uptime
+  Kuma so the lab dashboard can show an alerting-watchdog tile.
 
 The integration is **read-only at the device level**: there is no
 `control_action` tool and no `/control/*` calls. Control flows through
