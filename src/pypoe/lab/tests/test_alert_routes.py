@@ -7,6 +7,7 @@ subprocess so the test never touches the network or the shell.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -17,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from pypoe.lab import alert_routes
+from pypoe.lab.config import reload_config
 from pypoe.lab.http_client import LabClient
 
 
@@ -304,3 +306,103 @@ def test_concurrency_bound_is_respected(monkeypatch):
 
     peak = asyncio.run(main())
     assert peak <= 2, f"peak concurrency {peak} exceeded max_concurrent=2"
+
+
+# ---------------------------------------------------------------------------
+# _run_claude hardening (model pin, strict MCP config, cwd isolation, timeout)
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self, out=b"ok summary", err=b"", returncode=0):
+        self._out = out
+        self._err = err
+        self.returncode = returncode
+
+    async def communicate(self):
+        return (self._out, self._err)
+
+    async def wait(self):
+        return self.returncode
+
+
+def test_run_claude_builds_hardened_command(monkeypatch, tmp_path):
+    """The investigation subprocess pins a model, injects only the pypoe-lab
+    MCP server strictly, runs outside the repo tree, and carries a system
+    prompt — matching the dashboard assistant's safeguards."""
+
+    captured: dict = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = list(args)
+        captured["cwd"] = kwargs.get("cwd")
+        return _FakeProc(out=b"root cause: air pressure")
+
+    # Deterministic config (no packaged slack.yaml), isolated runtime dir.
+    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(tmp_path / "no-such.yaml"))
+    monkeypatch.setenv("PYPOE_INVESTIGATOR_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("LAB_INVESTIGATION_MODEL", "sonnet")
+    reload_config()
+    monkeypatch.setattr(alert_routes, "_claude_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(alert_routes.asyncio, "create_subprocess_exec", fake_exec)
+
+    try:
+        out = asyncio.run(alert_routes._run_claude("investigate ot2_hte"))
+    finally:
+        reload_config()
+
+    args = captured["args"]
+    assert args[0] == "/usr/bin/claude"
+    assert "-p" in args and "investigate ot2_hte" in args
+    assert args[args.index("--model") + 1] == "sonnet"
+    assert "--strict-mcp-config" in args
+    assert "--append-system-prompt" in args
+    assert args[args.index("--allowedTools") + 1] == "mcp__pypoe-lab__*"
+    # cwd is the isolated runtime dir, not the repo tree.
+    assert captured["cwd"] == str(tmp_path)
+    # An explicit, strict mcp.json was written for exactly the pypoe-lab server.
+    mcp_path = args[args.index("--mcp-config") + 1]
+    assert mcp_path == str(tmp_path / "mcp.json")
+    cfg = json.loads((tmp_path / "mcp.json").read_text())
+    assert list(cfg["mcpServers"].keys()) == ["pypoe-lab"]
+    assert cfg["mcpServers"]["pypoe-lab"]["args"] == ["lab-mcp"]
+    assert out == "root cause: air pressure"
+
+
+def test_run_claude_times_out_and_kills(monkeypatch, tmp_path):
+    """A hung CLI is killed at the wallclock cap and reported, not left to
+    linger against the concurrency budget."""
+
+    killed = {"value": False}
+
+    class _HangProc:
+        returncode = None
+
+        async def communicate(self):
+            await asyncio.sleep(10)
+            return (b"", b"")
+
+        def kill(self):
+            killed["value"] = True
+            self.returncode = -9
+
+        async def wait(self):
+            return -9
+
+    async def fake_exec(*args, **kwargs):
+        return _HangProc()
+
+    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(tmp_path / "no-such.yaml"))
+    monkeypatch.setenv("PYPOE_INVESTIGATOR_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("LAB_INVESTIGATION_TIMEOUT_S", "0.05")
+    reload_config()
+    monkeypatch.setattr(alert_routes, "_claude_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(alert_routes.asyncio, "create_subprocess_exec", fake_exec)
+
+    try:
+        out = asyncio.run(alert_routes._run_claude("investigate"))
+    finally:
+        reload_config()
+
+    assert "timeout" in out.lower()
+    assert killed["value"] is True

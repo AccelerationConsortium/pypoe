@@ -13,9 +13,12 @@ doesn't fork an unbounded number of ``claude`` subprocesses.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-import shlex
+import shutil
+import sys
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -38,6 +41,132 @@ logger = logging.getLogger(__name__)
 
 _MAX_CLAUDE_OUTPUT_CHARS = 3000
 _DEFAULT_MAX_CONCURRENT = 2
+_ALLOWED_TOOL_GLOB = "mcp__pypoe-lab__*"
+
+#: The investigator's role + read-only mandate, injected via
+#: ``--append-system-prompt`` so it is enforced as a system instruction rather
+#: than buried in the user prompt (the incident-specific steps stay there).
+#: Mirrors the dashboard assistant's ``SYSTEM_PROMPT`` pattern.
+SYSTEM_PROMPT = """You are the AC Organic Self-driving Lab's automated incident \
+investigator. An alert has fired; investigate it using the read-only \
+`pypoe-lab` MCP server and report a concise root-cause summary for a Slack \
+thread.
+
+You are READ-ONLY. You cannot actuate hardware and must never propose calling \
+`/control/*` endpoints directly. If recovery needs a control action, recommend \
+it in plain English for a human or a `lab-skills` workflow to carry out.
+
+Ground every conclusion in evidence you actually read via the MCP tools. If the \
+data does not support a conclusion, say so plainly rather than speculate."""
+
+
+def _investigator_runtime_dir() -> Path:
+    """Minimal scratch dir for the investigation subprocess.
+
+    Holds the generated ``mcp.json`` and doubles as the subprocess cwd.
+    Deliberately *outside* the pypoe repo tree so the spawned ``claude`` finds
+    no project ``CLAUDE.md`` / ``CLAUDE.local.md`` to auto-load — that bundle
+    would otherwise be re-read on every alert, thrashing the prompt cache and
+    burning usage limits (the same reason the dashboard assistant isolates its
+    cwd). Override with ``PYPOE_INVESTIGATOR_RUNTIME_DIR``.
+    """
+
+    d = Path(
+        os.environ.get(
+            "PYPOE_INVESTIGATOR_RUNTIME_DIR",
+            str(Path.home() / ".cache" / "pypoe-investigator"),
+        )
+    )
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _investigator_cwd() -> str:
+    return os.environ.get("PYPOE_INVESTIGATOR_CWD") or str(_investigator_runtime_dir())
+
+
+def _claude_binary() -> Optional[str]:
+    """Resolve the ``claude`` CLI, tolerating a minimal systemd PATH.
+
+    PyPoe's web service runs under systemd with a PATH that usually excludes
+    ``~/.local/bin``, so ``shutil.which`` alone often misses a per-user install.
+    Honour an explicit override, then fall back to well-known install paths.
+    """
+
+    override = os.environ.get("PYPOE_CLAUDE_BIN")
+    if override:
+        return override
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidates = [
+        Path.home() / ".local" / "bin" / "claude",
+        Path("/usr/local/bin/claude"),
+        Path("/opt/claude/bin/claude"),
+        Path("/home/sdl2/.local/bin/claude"),
+    ]
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
+
+
+def _pypoe_binary() -> str:
+    """Resolve the ``pypoe`` console script that launches the lab MCP server.
+
+    Prefers ``PYPOE_BIN``, then PATH, then the script sitting next to the
+    running interpreter (the common editable-install layout). Falls back to the
+    bare name so a mis-resolved env still produces a legible spawn error.
+    """
+
+    override = os.environ.get("PYPOE_BIN")
+    if override:
+        return override
+    found = shutil.which("pypoe")
+    if found:
+        return found
+    sibling = Path(sys.executable).with_name("pypoe")
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return "pypoe"
+
+
+def _write_mcp_config(cfg) -> Path:
+    """Materialise an explicit ``pypoe-lab`` MCP config and return its path.
+
+    Passed via ``--mcp-config`` + ``--strict-mcp-config`` so the investigation
+    sees *only* this read-only server regardless of the subprocess cwd or any
+    filesystem-discovered ``claude`` MCP config — hermetic, like the dashboard
+    assistant. The MCP server subprocess needs a few env vars to reach the
+    aggregator and (for ``consult_poe``) Poe; forward just those.
+    """
+
+    env: dict[str, str] = {"LAB_API_URL": cfg.api_url}
+    for key in (
+        "POE_API_KEY",
+        "LAB_MCP_AGENT_SOURCE",
+        "LAB_MCP_HTTP_TIMEOUT",
+        "LAB_CONSULT_ENABLED",
+        "LAB_CONSULT_MODELS",
+        "PYPOE_LAB_CONFIG",
+    ):
+        val = os.environ.get(key)
+        if val is not None:
+            env[key] = val
+
+    config = {
+        "mcpServers": {
+            "pypoe-lab": {
+                "type": "stdio",
+                "command": _pypoe_binary(),
+                "args": ["lab-mcp"],
+                "env": env,
+            }
+        }
+    }
+    path = _investigator_runtime_dir() / "mcp.json"
+    path.write_text(json.dumps(config, indent=2))
+    return path
 
 
 _INVESTIGATION_PROMPT_HEAD = """\
@@ -367,32 +496,76 @@ async def _investigate(
 
 
 async def _run_claude(prompt: str) -> str:
-    """Run ``claude -p <prompt>`` and return stdout (or a useful error)."""
+    """Run a hardened ``claude`` investigation and return stdout (or an error).
+
+    Adopts the dashboard assistant's safeguards: a pinned ``--model`` (no silent
+    tier drift), an explicit ``--mcp-config`` + ``--strict-mcp-config`` (only the
+    read-only ``pypoe-lab`` server, independent of cwd), a cwd outside the repo
+    tree (no ``CLAUDE.md`` bundle re-read per alert), the role/read-only mandate
+    via ``--append-system-prompt``, and a hard wallclock timeout so a hung CLI
+    can never linger against the concurrency budget.
+    """
+
+    binary = _claude_binary()
+    if binary is None:
+        return (
+            ":x: `claude` CLI not on PATH. Install it on the same host as PyPoe "
+            "(see https://docs.anthropic.com/en/docs/claude-code) or set "
+            "`PYPOE_CLAUDE_BIN` so the webhook can spawn investigations."
+        )
+
+    cfg = load_config()
+    mcp_config_path = _write_mcp_config(cfg)
+    timeout_s = cfg.alerts.investigation_timeout_s
+    args = [
+        binary,
+        "-p",
+        prompt,
+        "--model",
+        cfg.alerts.investigation_model,
+        "--append-system-prompt",
+        SYSTEM_PROMPT,
+        "--mcp-config",
+        str(mcp_config_path),
+        "--strict-mcp-config",
+        # Headless -p runs cannot grant permissions interactively, so the lab
+        # MCP tools must be pre-allowed or every call is refused.
+        "--allowedTools",
+        _ALLOWED_TOOL_GLOB,
+        "--permission-mode",
+        "default",
+    ]
+
     try:
         proc = await asyncio.create_subprocess_exec(
-            "claude",
-            "-p",
-            prompt,
-            # Headless -p runs cannot grant permissions interactively, so the
-            # lab MCP tools must be pre-allowed or every call is refused.
-            "--allowedTools",
-            "mcp__pypoe-lab__*",
+            *args,
+            cwd=_investigator_cwd(),
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            return (
-                f":x: `claude` exited {proc.returncode}\n"
-                f"```\n{stderr.decode(errors='replace').strip()[:1500]}\n```"
-            )
-        return stdout.decode(errors="replace").strip()
     except FileNotFoundError:
+        return f":x: could not spawn `{binary}` — check the install / `PYPOE_CLAUDE_BIN`."
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
         return (
-            ":x: `claude` CLI not on PATH. Install it on the same host as PyPoe "
-            "(see https://docs.anthropic.com/en/docs/claude-code) so the webhook "
-            "can spawn investigations."
+            f":x: investigation exceeded {timeout_s:.0f}s timeout and was killed "
+            "before producing a summary."
         )
+
+    if proc.returncode != 0:
+        return (
+            f":x: `claude` exited {proc.returncode}\n"
+            f"```\n{stderr.decode(errors='replace').strip()[:1500]}\n```"
+        )
+    return stdout.decode(errors="replace").strip()
 
 
 # ---------------------------------------------------------------------------

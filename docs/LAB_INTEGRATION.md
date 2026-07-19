@@ -294,23 +294,38 @@ all non-healthy devices via `list_equipment()`.
 (run `claude` once on the host), so no Anthropic API key is needed in
 the PyPoe environment. `consult_poe` uses your `POE_API_KEY`.
 
-**Headless permissions (load-bearing).** Two things must be true on
-the host or every investigation replies "my tools are unavailable":
+**Hardened, self-contained invocation.** The webhook drives `claude`
+with the same safeguards as the dashboard assistant, so it does **not**
+depend on any out-of-band `claude mcp add` registration:
 
-1. The `pypoe-lab` MCP server is registered for the `claude` CLI in
-   the directory `pypoe web` runs from (its `WorkingDirectory`):
+- **Own MCP config.** `_run_claude` writes a strict `mcp.json` that
+  registers only the read-only `pypoe-lab` server (`pypoe lab-mcp`) and
+  passes it via `--mcp-config … --strict-mcp-config`. Filesystem-
+  discovered `claude` MCP config is ignored, so behaviour no longer
+  varies with the `pypoe web` working directory. `LAB_API_URL`,
+  `POE_API_KEY`, and the `LAB_MCP_*` / `LAB_CONSULT_*` vars are forwarded
+  into the server subprocess's env.
+- **Pre-allowed tools.** Headless `-p` runs cannot grant permissions
+  interactively, so the webhook passes `--allowedTools
+  "mcp__pypoe-lab__*"` (change it in `lab/alert_routes.py` if you rename
+  the server).
+- **Pinned model.** `--model` is set from `alerts.investigation_model`
+  (default `sonnet`; env `LAB_INVESTIGATION_MODEL`) rather than
+  inheriting the host CLI default, so investigations don't silently drift
+  tiers.
+- **cwd isolation.** The subprocess runs in a scratch dir outside the
+  repo (`PYPOE_INVESTIGATOR_RUNTIME_DIR`, default
+  `~/.cache/pypoe-investigator`) so it never auto-loads the repo's
+  `CLAUDE.md` / `CLAUDE.local.md` bundle on every alert.
+- **Wallclock timeout.** Capped by `alerts.investigation_timeout_s`
+  (default 300 s; env `LAB_INVESTIGATION_TIMEOUT_S`); a hung CLI is
+  killed and reported instead of holding a concurrency slot forever.
+- **Role via system prompt.** The read-only, no-`/control/*` mandate is
+  injected with `--append-system-prompt`.
 
-   ```bash
-   cd /path/to/pypoe
-   claude mcp add pypoe-lab -e LAB_API_URL=http://127.0.0.1:8001 -- \
-       /path/to/pypoe/.venv/bin/pypoe lab-mcp
-   ```
-
-2. The spawned `claude -p` is pre-allowed to call those tools —
-   headless runs cannot grant permissions interactively. The webhook
-   passes `--allowedTools "mcp__pypoe-lab__*"` for exactly this
-   reason; if you rename the MCP server, update that flag in
-   `lab/alert_routes.py` to match.
+Registering the server manually (`claude mcp add pypoe-lab -- pypoe
+lab-mcp`) is still useful for *interactive* Claude Desktop / Code use,
+but is no longer required for the webhook.
 
 ### From the lab aggregator (device alerts)
 

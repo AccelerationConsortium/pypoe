@@ -15,6 +15,7 @@ Precedence (highest wins):
   1. Explicit kwargs in code (e.g. ``LabClient(base_url=...)``).
   2. Environment variables (``LAB_API_URL``, ``LAB_SLACK_CHANNEL``,
      ``LAB_SLACK_COMMAND_PREFIX``, ``LAB_ALERT_MAX_CONCURRENT``,
+     ``LAB_INVESTIGATION_MODEL``, ``LAB_INVESTIGATION_TIMEOUT_S``,
      ``LAB_MCP_AGENT_SOURCE``, ``LAB_MCP_HTTP_TIMEOUT``).
   3. Values in the YAML config.
   4. Hardcoded defaults below.
@@ -48,6 +49,16 @@ class SlackSection:
 @dataclass(frozen=True)
 class AlertsSection:
     max_concurrent_investigations: int = 2
+    #: Model alias passed to ``claude --model`` for the investigation. Pinned
+    #: (rather than inheriting the host CLI default) so investigations are
+    #: reproducible and don't silently drift onto a different tier. Mirrors the
+    #: dashboard assistant's ``ASSISTANT_CLAUDE_MODEL`` default.
+    investigation_model: str = "sonnet"
+    #: Hard wallclock cap (seconds) on a single ``claude`` investigation
+    #: subprocess. Generous by default because an investigation fans out to
+    #: several MCP reads plus per-model ``consult_poe`` round-trips, but bounded
+    #: so a hung CLI can never linger. Env: ``LAB_INVESTIGATION_TIMEOUT_S``.
+    investigation_timeout_s: float = 300.0
 
 
 @dataclass(frozen=True)
@@ -220,6 +231,16 @@ def load_config() -> LabConfig:
             _env_int("LAB_ALERT_MAX_CONCURRENT")
             or _dig(lab_root, "alerts", "max_concurrent_investigations")
             or AlertsSection.__dataclass_fields__["max_concurrent_investigations"].default
+        ),
+        investigation_model=(
+            os.environ.get("LAB_INVESTIGATION_MODEL")
+            or _dig(lab_root, "alerts", "investigation_model")
+            or AlertsSection.__dataclass_fields__["investigation_model"].default
+        ),
+        investigation_timeout_s=(
+            _env_float("LAB_INVESTIGATION_TIMEOUT_S")
+            or _dig(lab_root, "alerts", "investigation_timeout_s")
+            or AlertsSection.__dataclass_fields__["investigation_timeout_s"].default
         ),
     )
 
