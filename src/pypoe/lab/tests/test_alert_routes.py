@@ -70,6 +70,23 @@ def test_build_prompt_with_models_lists_each_model():
     assert "do not propose" in prompt.lower()
 
 
+def test_prompts_ask_to_read_prior_observations():
+    """Both prompt shapes must steer the investigator to read prior agent
+    findings and journal a matchable headline, so recurrences build on the
+    last root cause instead of starting cold."""
+    device = alert_routes._build_device_prompt(
+        device_id="ot2_hte", event="unreachable", msg="disconnected",
+        consult_models=("GPT-5.5",),
+    )
+    kuma = alert_routes._build_investigation_prompt(
+        monitor="aggregator", msg="down", consult_models=(),
+    )
+    for prompt in (device, kuma):
+        assert "recent_observations" in prompt
+        assert "recurrence" in prompt.lower()
+        assert "headline" in prompt.lower()
+
+
 def test_build_prompt_no_models_uses_solo_block():
     """Empty model list → no consult step, no synthesis block."""
     prompt = alert_routes._build_investigation_prompt(

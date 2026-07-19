@@ -207,6 +207,7 @@ a `control_action`:
 | `list_platforms()` | read | `GET /api/platforms` |
 | `skill_catalog()` | read | `GET /api/catalog` |
 | `recent_events(id, limit)` | read | `GET /api/history/events/{id}` |
+| `recent_observations(id, limit)` | read | `GET /api/history/events/{id}?event_type=agent_observation` |
 | `device_uptime(id?, days)` | read | `GET /api/history/uptime[/{id}]` |
 | `latest_sensors()` | read | `GET /api/history/sensors/latest` |
 | `recent_runs(limit)` | read | `GET /api/history/runs` |
@@ -221,6 +222,15 @@ record shows up in `GET /api/history/events/{device_id}` and on the
 dashboard's history sidebar. Severity and source live under `extra` so
 they survive the aggregator's `message = rec.message or rec.context`
 collapse (see `ac-organic-lab/api/app/history.py::ingest_events`).
+
+Those journaled rows are the shared "institutional memory": `lab.db` is
+the single logbook PyPoe writes and both surfaces read. The investigation
+prompt now calls `recent_observations(device_id)` *before* diagnosing, so a
+repeat alert is treated as a recurrence that builds on the last root cause
+(and journals a stable one-line headline for future matching) rather than
+being re-investigated cold. The dashboard assistant reads the same rows via
+`query_equipment_events(event_type="agent_observation")` but stays
+read-only — PyPoe is the sole writer.
 
 ### From the Slack bot
 

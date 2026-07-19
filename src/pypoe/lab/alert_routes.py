@@ -179,9 +179,11 @@ Steps:
 1. Call `aggregator_health()` and `list_equipment()`. If the aggregator
    itself is down, say so and stop.
 2. For each device whose state is not `ready`/`idle`/`running`/`dry_run`,
-   call `get_equipment_status()` and `recent_events(device_id)`. Inspect
-   `status.equipment_status`, `status.message`, `status.last_error`, and
-   `details.claimed_by`.
+   call `get_equipment_status()`, `recent_events(device_id)`, and
+   `recent_observations(device_id)`. Inspect `status.equipment_status`,
+   `status.message`, `status.last_error`, and `details.claimed_by`. If a
+   device has prior observations, treat a repeat as a RECURRENCE and build on
+   the earlier root cause instead of re-deriving it from scratch.
 """
 
 _DEVICE_PROMPT_HEAD = """\
@@ -192,9 +194,13 @@ You have a `pypoe-lab` MCP server registered. Use it to investigate.
 
 Steps:
 
-1. Call `get_equipment_status("{device_id}")` and
-   `recent_events("{device_id}")`. Inspect `status.equipment_status`,
-   `status.message`, `status.last_error`, and `details.claimed_by`.
+1. Call `get_equipment_status("{device_id}")`,
+   `recent_events("{device_id}")`, and `recent_observations("{device_id}")`.
+   Inspect `status.equipment_status`, `status.message`, `status.last_error`,
+   and `details.claimed_by`. If `recent_observations` shows this device was
+   investigated before, decide whether this is a NEW issue or a RECURRENCE:
+   for a recurrence, build on the prior root cause (cite its date and note the
+   occurrence count) rather than starting cold.
 2. Call `device_uptime("{device_id}")` and `aggregator_health()` for
    context. If other devices are listed as affected above, check each
    of them briefly with `get_equipment_status()` — simultaneous failures
@@ -224,7 +230,9 @@ _NO_CONSULT_BLOCK = """\
 
 _INVESTIGATION_PROMPT_TAIL_CONSULT = """\
 4. Per affected device, call `append_observation(device_id, summary,
-   severity)` to journal your finding.
+   severity)` to journal your finding. Lead `summary` with a stable one-line
+   root-cause headline so a future `recent_observations` read can match a
+   recurrence to this incident.
 
 You CANNOT perform control actions through this server. Do not propose
 calling `/control/*` directly. If recovery requires a control action,
@@ -245,7 +253,9 @@ message after truncation.
 
 _INVESTIGATION_PROMPT_TAIL_SOLO = """\
 4. Per affected device, call `append_observation(device_id, summary,
-   severity)` to journal your finding.
+   severity)` to journal your finding. Lead `summary` with a stable one-line
+   root-cause headline so a future `recent_observations` read can match a
+   recurrence to this incident.
 
 You CANNOT perform control actions through this server. Do not propose
 calling `/control/*` directly. If recovery requires a control action,

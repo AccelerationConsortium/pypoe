@@ -104,6 +104,19 @@ class LabClient:
             f"/api/history/events/{device_id}", params={"limit": limit}
         )
 
+    async def recent_observations(self, device_id: str, limit: int = 10) -> dict:
+        """Prior agent findings for one device, newest first.
+
+        These are the rows the investigator itself journaled via
+        :meth:`append_observation` (``event_type='agent_observation'``), so a
+        new investigation can recognise a recurrence and build on the last
+        root cause instead of starting cold.
+        """
+        return await self._get_json(
+            f"/api/history/events/{device_id}",
+            params={"limit": limit, "event_type": "agent_observation"},
+        )
+
     async def uptime(
         self, device_id: Optional[str] = None, days: int = 7
     ) -> dict:

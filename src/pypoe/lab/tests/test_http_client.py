@@ -74,6 +74,18 @@ async def test_recent_events_passes_limit():
 
 
 @pytest.mark.asyncio
+async def test_recent_observations_filters_to_agent_observation():
+    async def handler(request):
+        assert request.url.path == "/api/history/events/ot2_hte"
+        assert request.url.params.get("event_type") == "agent_observation"
+        assert request.url.params.get("limit") == "10"
+        return httpx.Response(200, json={"device_id": "ot2_hte", "events": []})
+
+    async with _mk_client(handler) as client:
+        await client.recent_observations("ot2_hte")
+
+
+@pytest.mark.asyncio
 async def test_append_observation_envelope_shape():
     """The aggregator collapses ``context`` into ``message`` when message is
     empty, so severity/source must live in ``extra``, never in ``context``.

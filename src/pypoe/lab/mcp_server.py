@@ -99,6 +99,17 @@ def build_server(client: Optional[LabClient] = None) -> "FastMCP":
         return await lab.recent_events(device_id, limit=limit)
 
     @server.tool()
+    async def recent_observations(device_id: str, limit: int = 10) -> dict:
+        """Prior agent findings for one device, newest first.
+
+        These are earlier investigations' own notes (the rows this server
+        wrote via ``append_observation``). Read them BEFORE diagnosing so you
+        can tell a fresh incident from a recurrence and build on the last
+        root cause instead of starting from scratch.
+        """
+        return await lab.recent_observations(device_id, limit=limit)
+
+    @server.tool()
     async def device_uptime(
         device_id: Optional[str] = None, days: int = 7
     ) -> dict:
