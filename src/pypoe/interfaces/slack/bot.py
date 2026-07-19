@@ -186,11 +186,11 @@ class PyPoeSlackBot:
         # Model-specific context limits
         self.model_context_limits = {
             # OpenAI Models
-            "GPT-5.5": {"max_tokens": 100000, "max_messages": 200},
-            "GPT-5.5-Pro": {"max_tokens": 100000, "max_messages": 200},
+            "GPT-5.4": {"max_tokens": 100000, "max_messages": 200},
             "GPT-4-Turbo": {"max_tokens": 100000, "max_messages": 200},
 
             # Anthropic Models
+            "Claude-Opus-4.8": {"max_tokens": 150000, "max_messages": 300},
             "Claude-Opus-4.7": {"max_tokens": 150000, "max_messages": 300},
             "Claude-Sonnet-4.6": {"max_tokens": 150000, "max_messages": 300},
 
@@ -201,7 +201,11 @@ class PyPoeSlackBot:
             # xAI Models
             "Grok-4": {"max_tokens": 100000, "max_messages": 200},
 
-            # Other Models - Conservative defaults
+            # Other Models
+            "GLM-5.2": {"max_tokens": 100000, "max_messages": 200},
+            "Kimi-K3": {"max_tokens": 100000, "max_messages": 200},
+
+            # Conservative default for anything unlisted
             "Default": {"max_tokens": 12000, "max_messages": 40}
         }
         

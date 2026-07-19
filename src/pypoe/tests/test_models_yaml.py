@@ -40,8 +40,8 @@ def test_yaml_overrides_hardcoded(tmp_path, monkeypatch):
 def test_missing_file_uses_fallbacks(tmp_path, monkeypatch):
     """If models.yaml doesn't exist, the hardcoded fallbacks ship."""
     mod = _reimport(monkeypatch, tmp_path / "does_not_exist.yaml")
-    # Hardcoded snapshot includes Claude-Sonnet-4.6 as default.
-    assert mod.DEFAULT_CHAT_MODEL == "Claude-Sonnet-4.6"
+    # Hardcoded snapshot includes Claude-Opus-4.8 as default.
+    assert mod.DEFAULT_CHAT_MODEL == "Claude-Opus-4.8"
     assert "Claude-Opus-4.7" in mod.CHAT_MODELS
 
 
@@ -50,7 +50,7 @@ def test_malformed_yaml_uses_fallbacks(tmp_path, monkeypatch):
     cfg = tmp_path / "models.yaml"
     cfg.write_text("not: valid: yaml::: at all")
     mod = _reimport(monkeypatch, cfg)
-    assert mod.DEFAULT_CHAT_MODEL == "Claude-Sonnet-4.6"
+    assert mod.DEFAULT_CHAT_MODEL == "Claude-Opus-4.8"
 
 
 def test_partial_yaml_fills_in_missing_keys(tmp_path, monkeypatch):
@@ -59,7 +59,7 @@ def test_partial_yaml_fills_in_missing_keys(tmp_path, monkeypatch):
     cfg.write_text(yaml.safe_dump({"chat_models": ["Only-Bot"]}))
     mod = _reimport(monkeypatch, cfg)
     assert mod.CHAT_MODELS == ["Only-Bot"]
-    assert mod.DEFAULT_CHAT_MODEL == "Claude-Sonnet-4.6"  # fallback
+    assert mod.DEFAULT_CHAT_MODEL == "Claude-Opus-4.8"  # fallback
     assert "Claude-Opus-4.7" in mod.MODEL_PRICING_USD_PER_1M_TOKENS  # fallback
 
 
