@@ -56,12 +56,12 @@ def test_build_prompt_with_models_lists_each_model():
     prompt = alert_routes._build_investigation_prompt(
         monitor="plateloc",
         msg="No response from COM3",
-        consult_models=("GPT-5.5", "Claude-Opus-4.7", "Gemini-3.1-Pro"),
+        consult_models=("GPT-5.4", "Claude-Opus-4.7", "Gemini-3.1-Pro"),
     )
     assert "plateloc" in prompt
     assert "No response from COM3" in prompt
     # Each model name appears in the listed block.
-    for m in ("GPT-5.5", "Claude-Opus-4.7", "Gemini-3.1-Pro"):
+    for m in ("GPT-5.4", "Claude-Opus-4.7", "Gemini-3.1-Pro"):
         assert m in prompt
     # Consult-block instructions present.
     assert "consult_poe" in prompt
@@ -76,7 +76,7 @@ def test_prompts_ask_to_read_prior_observations():
     last root cause instead of starting cold."""
     device = alert_routes._build_device_prompt(
         device_id="ot2_hte", event="unreachable", msg="disconnected",
-        consult_models=("GPT-5.5",),
+        consult_models=("GPT-5.4",),
     )
     kuma = alert_routes._build_investigation_prompt(
         monitor="aggregator", msg="down", consult_models=(),
@@ -133,7 +133,8 @@ def test_kuma_webhook_down_posts_investigating_then_summary(monkeypatch):
     prompt = investigations[0]
     assert "aggregator" in prompt
     assert "connection refused" in prompt
-    assert "GPT-5.5" in prompt and "Claude-Opus-4.7" in prompt
+    # Default consult models (ConsultSection — see pypoe.lab.config).
+    assert "GPT-5.4" in prompt and "GLM-5.2" in prompt
     assert len(posted) == 2
     threaded = posted[1]
     assert threaded["thread_ts"] == "ts-1"  # threaded under the first message
@@ -230,6 +231,77 @@ def test_device_alert_storm_mentions_other_devices(monkeypatch):
     assert "(+2 more)" in posted[0]["text"]
     prompt = investigations[0]
     assert "plateloc" in prompt and "cytation_5" in prompt
+
+
+def test_device_alert_prefixes_platform_and_injects_context(monkeypatch):
+    """When the device is in a platform section, the Slack headline is
+    prefixed with the platform and the prompt carries the co-located devices
+    for shared-cause reasoning."""
+    posted: list[dict] = []
+    investigations: list[str] = []
+
+    async def fake_post_slack(channel, text, thread_ts=None):
+        posted.append({"text": text, "thread_ts": thread_ts})
+        return f"ts-{len(posted)}"
+
+    async def fake_run_claude(prompt):
+        investigations.append(prompt)
+        return "diagnosis"
+
+    monkeypatch.setattr(alert_routes, "_post_slack", fake_post_slack)
+    monkeypatch.setattr(alert_routes, "_run_claude", fake_run_claude)
+
+    def handler(request):
+        if request.url.path == "/api/platforms":
+            return httpx.Response(
+                200,
+                json={
+                    "sections": [
+                        {
+                            "id": "hte",
+                            "title": "HTE Platform",
+                            "equipment": ["ot2_hte", "plateloc", "cytation_5"],
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(200, json={})
+
+    lab = LabClient(
+        base_url="http://test",
+        client=httpx.AsyncClient(
+            base_url="http://test", transport=httpx.MockTransport(handler)
+        ),
+    )
+    app = FastAPI()
+    alert_routes.register_alert_routes(
+        app, client=lab, max_concurrent=2, slack_channel="#test"
+    )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/alerts/device",
+            json={"device_id": "ot2_hte", "event": "unreachable", "message": "gone"},
+        )
+    assert resp.status_code == 202
+    # Headline carries the platform label.
+    assert "HTE Platform · ot2_hte" in posted[0]["text"]
+    # Prompt names the platform and its co-located (sibling) devices.
+    prompt = investigations[0]
+    assert "Platform: HTE Platform" in prompt
+    assert "plateloc" in prompt and "cytation_5" in prompt
+
+
+def test_device_alert_unknown_platform_falls_back_to_bare_id(monkeypatch):
+    """A device not in any section keeps today's bare-id behaviour."""
+    app, posted, investigations = _mk_app(monkeypatch)  # mock returns {} for /api/platforms
+    with TestClient(app) as client:
+        client.post(
+            "/alerts/device",
+            json={"device_id": "some_service", "event": "error", "message": "x"},
+        )
+    assert "*some_service*" in posted[0]["text"]
+    assert "·" not in posted[0]["text"]  # no platform separator
 
 
 def test_device_alert_recovery_posts_recovery_only(monkeypatch):

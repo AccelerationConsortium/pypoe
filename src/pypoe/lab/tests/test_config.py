@@ -114,7 +114,12 @@ def test_non_numeric_env_int_is_ignored(monkeypatch):
 def test_consult_defaults(monkeypatch):
     cfg = lab_config.load_config()
     assert cfg.consult.enabled is True
-    assert cfg.consult.models == ("GPT-5.5", "Claude-Opus-4.7")
+    assert cfg.consult.models == ("GPT-5.4", "GLM-5.2")
+
+
+def test_investigation_model_default_is_sonnet_5(monkeypatch):
+    cfg = lab_config.load_config()
+    assert cfg.alerts.investigation_model == "claude-sonnet-5"
 
 
 def test_consult_yaml(monkeypatch, tmp_path):

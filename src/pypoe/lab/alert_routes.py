@@ -188,7 +188,7 @@ Steps:
 
 _DEVICE_PROMPT_HEAD = """\
 A lab device alert just fired: `{device_id}` reported `{event}`
-(message: {msg}).{last_error_line}{devices_line}
+(message: {msg}).{platform_line}{last_error_line}{devices_line}
 
 You have a `pypoe-lab` MCP server registered. Use it to investigate.
 
@@ -242,7 +242,7 @@ recommend it in plain English so a human or workflow can execute it via
 End with a synthesised Slack-thread reply that contains, in order:
   - One-line headline of the most likely root cause.
   - 1-2 bullets per consulted model summarising what it said,
-    explicitly noting any divergences (e.g. "GPT-5.5 thinks X;
+    explicitly noting any divergences (e.g. "GPT-5.4 thinks X;
     Claude-Opus-4.7 thinks Y").
   - 1-2 lines of YOUR own diagnosis, citing the lab evidence.
   - If recovery requires a control action, recommend it in plain
@@ -286,6 +286,8 @@ def _build_device_prompt(
     *,
     last_error: Optional[dict] = None,
     devices: Optional[list[str]] = None,
+    platform: Optional[str] = None,
+    siblings: Optional[list[str]] = None,
 ) -> str:
     """Compose a device-focused investigation prompt (POST /alerts/device)."""
     last_error_line = (
@@ -296,10 +298,20 @@ def _build_device_prompt(
         if devices
         else ""
     )
+    # Platform context sharpens shared-cause reasoning: a whole-bench failure
+    # (lost PC, gateway, power) tends to take out the co-located devices too.
+    if platform:
+        colocated = (
+            f" (co-located devices: {', '.join(siblings)})" if siblings else ""
+        )
+        platform_line = f"\nPlatform: {platform}{colocated}."
+    else:
+        platform_line = ""
     head = _DEVICE_PROMPT_HEAD.format(
         device_id=device_id,
         event=event,
         msg=msg,
+        platform_line=platform_line,
         last_error_line=last_error_line,
         devices_line=devices_line,
     )
@@ -380,13 +392,17 @@ def register_alert_routes(
         monitor_name = (payload.monitor.name if payload.monitor else None) or "unknown"
         msg = payload.msg or (payload.heartbeat.msg if payload.heartbeat else "") or ""
         is_down = payload.heartbeat is not None and payload.heartbeat.status == 0
+        # Best-effort platform label. Kuma often watches *services* (aggregator,
+        # gateways) that aren't in any platform section — those stay unlabelled.
+        platform, _siblings = await _resolve_platform(lab, monitor_name)
+        label = _platform_label(platform, monitor_name)
 
         if not is_down:
             # Recovery — post the recovery line, no investigation.
             try:
                 await _post_slack(
                     channel,
-                    f":white_check_mark: *{monitor_name}* recovered — {msg}".strip(),
+                    f":white_check_mark: *{label}* recovered — {msg}".strip(),
                 )
             except Exception as exc:
                 logger.error("Failed to post Slack recovery alert: %s", exc)
@@ -396,7 +412,7 @@ def register_alert_routes(
         try:
             thread_ts = await _post_slack(
                 channel,
-                f":rotating_light: *{monitor_name}* DOWN — {msg} "
+                f":rotating_light: *{label}* DOWN — {msg} "
                 f":mag: Investigating…",
             )
         except Exception as exc:
@@ -431,12 +447,16 @@ def register_alert_routes(
                 detail=f"event must be one of {DEVICE_ALERT_EVENTS}",
             )
         msg = payload.message or ""
+        # Best-effort: label the alert with its platform, and hand the
+        # investigator the co-located devices for shared-cause reasoning.
+        platform, siblings = await _resolve_platform(lab, payload.device_id)
+        label = _platform_label(platform, payload.device_id)
 
         if payload.event == "recovered":
             try:
                 await _post_slack(
                     channel,
-                    f":white_check_mark: *{payload.device_id}* recovered — {msg}".strip(),
+                    f":white_check_mark: *{label}* recovered — {msg}".strip(),
                 )
             except Exception as exc:
                 logger.error("Failed to post device recovery alert: %s", exc)
@@ -446,7 +466,7 @@ def register_alert_routes(
         try:
             thread_ts = await _post_slack(
                 channel,
-                f":rotating_light: *{payload.device_id}*{others} "
+                f":rotating_light: *{label}*{others} "
                 f"{payload.event.upper()} — {msg} :mag: Investigating…",
             )
         except Exception as exc:
@@ -461,6 +481,8 @@ def register_alert_routes(
             consult_models,
             last_error=payload.last_error,
             devices=payload.devices,
+            platform=platform,
+            siblings=siblings,
         )
         asyncio.create_task(
             _investigate(
@@ -576,6 +598,40 @@ async def _run_claude(prompt: str) -> str:
             f"```\n{stderr.decode(errors='replace').strip()[:1500]}\n```"
         )
     return stdout.decode(errors="replace").strip()
+
+
+# ---------------------------------------------------------------------------
+# Platform resolution (device_id -> platform label + co-located siblings)
+# ---------------------------------------------------------------------------
+
+
+def _platform_label(platform: Optional[str], device_id: str) -> str:
+    """Slack headline label: ``"HTE Platform · ot2_hte"`` when the platform is
+    known, else just the device id."""
+    return f"{platform} · {device_id}" if platform else device_id
+
+
+async def _resolve_platform(
+    lab: LabClient, device_id: str
+) -> tuple[Optional[str], list[str]]:
+    """Best-effort ``(platform_title, co-located device ids)`` for a device.
+
+    Reads the aggregator's platforms view (``GET /api/platforms``) and finds the
+    section whose equipment list contains ``device_id``. Returns ``(None, [])``
+    when the device isn't in any section (e.g. a Kuma *service* monitor) or the
+    lookup fails — never raises, so a platforms outage never blocks an alert.
+    """
+    try:
+        data = await lab.platforms()
+    except Exception:
+        return None, []
+    for section in (data.get("sections") or []):
+        equipment = section.get("equipment") or []
+        if device_id in equipment:
+            title = section.get("title") or section.get("id")
+            siblings = [e for e in equipment if e != device_id]
+            return title, siblings
+    return None, []
 
 
 # ---------------------------------------------------------------------------

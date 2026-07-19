@@ -39,6 +39,13 @@ lab:
     # Survives alert storms; raise if you have lots of monitors.
     max_concurrent_investigations: 2
 
+    # Model for the investigator itself — runs on the local Claude Code CLI
+    # (your Claude subscription), NOT Poe. Pinned so it doesn't drift tiers.
+    investigation_model: claude-sonnet-5
+
+    # Hard wallclock cap (seconds) per investigation; a hung CLI is killed.
+    investigation_timeout_s: 300
+
   mcp:
     # Stamped into the `extra.source` of every observation that
     # `append_observation()` writes. Useful to filter the dashboard's
@@ -56,9 +63,10 @@ lab:
     # empty) to keep Claude solo.
     enabled: true
 
-    # Poe models to consult during an investigation. Each model is
-    # called once per investigation. Names must match an entry in
-    # src/pypoe/config/models.yaml (chat_models list).
+    # Poe models to consult during an investigation (Poe-hosted, reached
+    # via POE_API_KEY — distinct from the local-CLI investigator above).
+    # Each model is called once per investigation. Names must match an
+    # entry in src/pypoe/config/models.yaml (chat_models list).
     models:
-      - GPT-5.5
-      - Claude-Opus-4.7
+      - GPT-5.4
+      - GLM-5.2

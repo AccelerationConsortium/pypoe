@@ -89,15 +89,23 @@ lab:
     command_prefix: /lab-               # namespace for /lab-* commands
   alerts:
     max_concurrent_investigations: 2    # cap on simultaneous claude -p
+    investigation_model: claude-sonnet-5 # the local-CLI investigator (NOT Poe)
+    investigation_timeout_s: 300        # hard wallclock cap per investigation
   mcp:
     agent_source: claude-agent          # stamped into observations
     http_timeout_s: 10                  # aggregator HTTP read timeout
   consult:
     enabled: true                       # ask Poe models for second opinions
     models:                             # one consult_poe call per entry
-      - GPT-5.5                         # names must match an entry in
-      - Claude-Opus-4.7                 # config/models.yaml::chat_models
+      - GPT-5.4                         # Poe bots — names must match an
+      - GLM-5.2                       # entry in config/models.yaml::chat_models
 ```
+
+Two distinct models are in play: the **investigator** runs on the local
+Claude Code CLI (`investigation_model`, default `claude-sonnet-5`, env
+`LAB_INVESTIGATION_MODEL`) on your Claude subscription — *not* Poe; the
+**second opinions** (`consult.models`, default `GPT-5.4`, `GLM-5.2`) are
+**Poe-hosted** bots reached via `POE_API_KEY`.
 
 When `consult.enabled` is true (default), every `/alerts/kuma`
 investigation requires Claude to call `consult_poe` once per model
@@ -124,18 +132,20 @@ lab:
 ### `models.yaml` schema
 
 ```yaml
-default: Claude-Sonnet-4.6           # used wherever DEFAULT_CHAT_MODEL is needed
+default: Claude-Opus-4.8             # used wherever DEFAULT_CHAT_MODEL is needed
 chat_models:                         # the list PyPoe's UIs offer to users
-  - Claude-Opus-4.7
+  - Claude-Opus-4.8
   - Claude-Sonnet-4.6
-  - GPT-5.5
-  - GPT-5.5-Pro
+  - Claude-Opus-4.7
+  - GPT-5.4
   - GPT-4-Turbo
   - Grok-4
   - Gemini-3.1-Pro
   - Gemini-3-Flash
+  - GLM-5.2
+  - Kimi-K3                          # live Poe bot, not yet in the pricing feed
 pricing_usd_per_1m_tokens:           # Poe pricing snapshot; controls
-  Claude-Opus-4.7:    { prompt: 4.2929,  completion: 21.4646  }   # the
+  Claude-Opus-4.8:    { prompt: 4.2929,  completion: 21.4646  }   # the
   Claude-Sonnet-4.6:  { prompt: 2.5758,  completion: 12.8788  }   # $-meter
   # ... (etc — see config/models.example.yaml)
 ```
@@ -320,9 +330,14 @@ depend on any out-of-band `claude mcp add` registration:
   "mcp__pypoe-lab__*"` (change it in `lab/alert_routes.py` if you rename
   the server).
 - **Pinned model.** `--model` is set from `alerts.investigation_model`
-  (default `sonnet`; env `LAB_INVESTIGATION_MODEL`) rather than
+  (default `claude-sonnet-5`; env `LAB_INVESTIGATION_MODEL`) rather than
   inheriting the host CLI default, so investigations don't silently drift
   tiers.
+- **Platform label.** The alert headline and the investigation prompt are
+  enriched with the device's platform (best-effort, via `GET /api/platforms`):
+  the Slack line reads `HTE Platform · ot2_hte`, and the prompt lists the
+  co-located devices so shared-cause reasoning is sharper. Kuma *service*
+  monitors not in any platform section stay unlabelled.
 - **cwd isolation.** The subprocess runs in a scratch dir outside the
   repo (`PYPOE_INVESTIGATOR_RUNTIME_DIR`, default
   `~/.cache/pypoe-investigator`) so it never auto-loads the repo's

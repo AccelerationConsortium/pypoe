@@ -49,11 +49,12 @@ class SlackSection:
 @dataclass(frozen=True)
 class AlertsSection:
     max_concurrent_investigations: int = 2
-    #: Model alias passed to ``claude --model`` for the investigation. Pinned
+    #: Model passed to ``claude --model`` for the investigation. Pinned
     #: (rather than inheriting the host CLI default) so investigations are
-    #: reproducible and don't silently drift onto a different tier. Mirrors the
-    #: dashboard assistant's ``ASSISTANT_CLAUDE_MODEL`` default.
-    investigation_model: str = "sonnet"
+    #: reproducible and don't silently drift onto a different tier. Runs on the
+    #: local Claude Code CLI (subscription/OAuth), NOT Poe. Env:
+    #: ``LAB_INVESTIGATION_MODEL``.
+    investigation_model: str = "claude-sonnet-5"
     #: Hard wallclock cap (seconds) on a single ``claude`` investigation
     #: subprocess. Generous by default because an investigation fans out to
     #: several MCP reads plus per-model ``consult_poe`` round-trips, but bounded
@@ -75,10 +76,14 @@ class ConsultSection:
     *requires* Claude to call ``consult_poe`` for each listed model
     and synthesise their responses into the Slack summary. When False
     (or ``models`` is empty), Claude investigates solo.
+
+    These are **Poe-hosted** bots reached via ``POE_API_KEY`` (distinct
+    from the local-CLI investigator model above). Env override:
+    ``LAB_CONSULT_MODELS`` (comma-separated).
     """
 
     enabled: bool = True
-    models: tuple[str, ...] = ("GPT-5.5", "Claude-Opus-4.7")
+    models: tuple[str, ...] = ("GPT-5.4", "GLM-5.2")
 
 
 @dataclass(frozen=True)
