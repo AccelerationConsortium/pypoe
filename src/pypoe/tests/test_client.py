@@ -16,9 +16,23 @@ def test_client_initialization_with_api_key(mock_env_with_api_key, test_api_key)
     assert client.config.poe_api_key == test_api_key
 
 def test_client_initialization_missing_api_key(mock_env_without_api_key):
-    """Test that client raises error when API key is missing."""
-    with pytest.raises(ValueError, match="POE_API_KEY is not set"):
+    """Test that client raises error when no provider is configured at all."""
+    with pytest.raises(ValueError, match="No model provider is configured"):
         PoeChatClient()
+
+
+def test_openrouter_alone_is_enough(mock_env_without_api_key):
+    """A Poe-less deployment must start.
+
+    Config() used to demand POE_API_KEY unconditionally, so every interface
+    failed at startup even with OpenRouter configured — which is exactly the
+    situation a lapsed Poe subscription creates.
+    """
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}):
+        client = PoeChatClient(enable_history=False)
+
+    assert client.config.openrouter_api_key == "sk-or-test"
+    assert client.config.poe_api_key == ""
 
 def test_client_enable_history_flag(mock_env_with_api_key):
     """Test that history can be enabled/disabled during initialization."""

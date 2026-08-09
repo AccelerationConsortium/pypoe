@@ -32,9 +32,9 @@ cd pypoe
 
 There is no `[all]` extra; `[dev]` is the closest analogue.
 
-## API key and `.env`
+## API keys and `.env`
 
-`.env` is the recommended way to keep `POE_API_KEY` out of your shell
+`.env` is the recommended way to keep provider keys out of your shell
 history. PyPoe loads the first file it finds, in this order (see
 `_load_env_files` in [src/pypoe/core/config.py](../src/pypoe/core/config.py)):
 
@@ -47,6 +47,42 @@ A minimal `.env`:
 ```env
 POE_API_KEY=your-poe-api-key
 ```
+
+### Model providers
+
+PyPoe talks to two providers, and routing is **per model** — a Poe model and
+an OpenRouter model can be used side by side, including as the two sides of a
+debate. Which provider serves which model is declared in
+[`src/pypoe/config/models.yaml`](../src/pypoe/config/models.example.yaml);
+a bare string is a Poe model, a `{id: ..., provider: openrouter}` mapping is
+an OpenRouter one.
+
+**At least one** key must be set — it need not be Poe:
+
+```env
+POE_API_KEY=your-poe-api-key            # https://poe.com/api_key
+OPENROUTER_API_KEY=sk-or-...            # https://openrouter.ai/keys
+```
+
+Poe is a flat subscription; **OpenRouter bills per token**, so a runaway loop
+can actually spend money there. Two guards, both optional:
+
+```env
+# Ceiling on every OpenRouter completion (0 disables the cap).
+PYPOE_OPENROUTER_MAX_TOKENS=4096
+
+# Report OpenRouter degraded on /status once the remaining balance falls
+# below this many USD — before requests start failing (0 disables).
+PYPOE_OPENROUTER_MIN_CREDITS=1.0
+```
+
+`GET /status` carries one component per configured provider
+(`poe_api`, `openrouter_api`) with a provider-qualified error code such as
+`poe_subscription_required` or `openrouter_auth_failed`, plus the remaining
+OpenRouter balance. A provider with no key is omitted rather than reported
+unhealthy. The service reads `ready` as long as **one** provider can answer,
+so a lapsed Poe subscription alongside a working OpenRouter key is not an
+outage.
 
 Add Slack and/or web variables only if you use those interfaces:
 
@@ -115,7 +151,8 @@ Plus one in `scripts/utils/`:
 
 | Symptom | First thing to check |
 |---------|----------------------|
-| `POE_API_KEY is not set` | `.env` location matches the precedence list above; `cat ~/.pypoe/.env` or `cat .env`. |
+| `No model provider is configured` | Set `POE_API_KEY` and/or `OPENROUTER_API_KEY`; check the `.env` location matches the precedence list above (`cat ~/.pypoe/.env` or `cat .env`). |
+| `requires an active Poe subscription` | Poe API access needs a live subscription. Renew at <https://poe.com/subscription_plans>, or add `OPENROUTER_API_KEY` and OpenRouter models to `models.yaml` to keep working meanwhile. |
 | `pypoe web` fails to import | You need the `[web-ui]` extra: `pip install -e ".[web-ui]"`. |
 | `pypoe slack` fails to import | Same — `[web-ui]` ships `slack-bolt`. |
 | Port 8000 already in use | `lsof -i :8000`; pass `--port 8001` to `pypoe web`. |

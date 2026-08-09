@@ -5,7 +5,21 @@ from typing import AsyncGenerator, List, Dict, Any, Optional
 import fastapi_poe as fp
 
 from .config import get_config, Config
-from .models import CHAT_MODELS, DEFAULT_CHAT_MODEL
+from .models import CHAT_MODELS, DEFAULT_CHAT_MODEL, provider_for
+from .provider_health import (
+    ACCOUNT_BLOCKING_REASONS,
+    MODEL_SCOPED_REASONS,
+    classify_exception,
+    recovery_hint,
+    registry as health,
+)
+from .providers import (
+    OPENROUTER,
+    ProviderSpec,
+    api_key_for,
+    get_provider,
+    stream_openai_compatible,
+)
 
 try:
     from .history import HistoryManager, _UNSCOPED
@@ -277,56 +291,21 @@ class PoeChatClient:
                 bot_name=bot_name
             )
         
-        # Prepare the message for the API
-        poe_message = fp.ProtocolMessage(role="user", content=message)
-        
         # Reset content processor state for new request
         self.content_processor.last_generating_message = ""
-        
+
         # Stream the response with error handling and content filtering
         full_response = ""
         try:
-            async for partial in fp.get_bot_response(
-                messages=[poe_message], 
-                bot_name=bot_name, 
-                api_key=self.api_key
-            ):
-                if hasattr(partial, 'text') and partial.text:
-                    # Filter out generating messages and empty chunks
-                    if not self.content_processor.should_filter_chunk(partial.text):
-                        yield partial.text
-                        full_response += partial.text
+            async for chunk in self._stream(bot_name, [{"role": "user", "content": message}]):
+                yield chunk
+                full_response += chunk
         except Exception as e:
-            error_msg = str(e)
-            # Handle specific bot access errors
-            if "Cannot access private bots" in error_msg:
-                available_bots = await self.get_available_bots()
-                claude_alternatives = [bot for bot in available_bots if "Claude" in bot]
-                
-                error_message = f"Bot '{bot_name}' is not accessible (private or deprecated).\n\n"
-                if claude_alternatives:
-                    error_message += f"Try these Claude alternatives instead:\n"
-                    for alt in claude_alternatives[:3]:  # Show top 3
-                        error_message += f"  • {alt}\n"
-                else:
-                    error_message += f"Try these available bots instead:\n"
-                    for alt in available_bots[:5]:  # Show top 5
-                        error_message += f"  • {alt}\n"
-                
-                raise ValueError(error_message)
-            elif "Bot does not exist" in error_msg:
-                available_bots = await self.get_available_bots()
-                error_message = f"Bot '{bot_name}' does not exist.\n\n"
-                error_message += f"Try these available bots instead:\n"
-                for alt in available_bots[:5]:  # Show top 5
-                    error_message += f"  • {alt}\n"
-                raise ValueError(error_message)
-            elif "insufficient" in error_msg.lower() or "quota" in error_msg.lower():
-                raise ValueError(f"Insufficient credits or quota exceeded. Please check your Poe subscription.")
-            else:
-                # Re-raise the original error for other cases
-                raise e
-        
+            translated = await self._provider_error(e, bot_name)
+            if translated is e:
+                raise
+            raise translated from e
+
         # Save the bot response to history
         if save_history and conversation_id and full_response and self.enable_history:
             await self.history.add_message(
@@ -368,15 +347,6 @@ class PoeChatClient:
         # Reset content processor state for new request
         self.content_processor.last_generating_message = ""
         
-        # Convert messages to Poe format, mapping roles correctly
-        poe_messages = [
-            fp.ProtocolMessage(
-                role=self._convert_role_for_api(msg["role"]), 
-                content=msg["content"]
-            )
-            for msg in messages
-        ]
-        
         # Save messages to history if needed (with proper role names)
         if save_history and conversation_id and self.enable_history:
             for msg in messages:
@@ -390,47 +360,15 @@ class PoeChatClient:
         # Stream the response with content filtering
         full_response = ""
         try:
-            async for partial in fp.get_bot_response(
-                messages=poe_messages, 
-                bot_name=bot_name, 
-                api_key=self.api_key
-            ):
-                if hasattr(partial, 'text') and partial.text:
-                    # Filter out generating messages and empty chunks
-                    if not self.content_processor.should_filter_chunk(partial.text):
-                        yield partial.text
-                        full_response += partial.text
+            async for chunk in self._stream(bot_name, messages):
+                yield chunk
+                full_response += chunk
         except Exception as e:
-            error_msg = str(e)
-            # Handle specific bot access errors
-            if "Cannot access private bots" in error_msg:
-                available_bots = await self.get_available_bots()
-                claude_alternatives = [bot for bot in available_bots if "Claude" in bot]
-                
-                error_message = f"Bot '{bot_name}' is not accessible (private or deprecated).\n\n"
-                if claude_alternatives:
-                    error_message += f"Try these Claude alternatives instead:\n"
-                    for alt in claude_alternatives[:3]:  # Show top 3
-                        error_message += f"  • {alt}\n"
-                else:
-                    error_message += f"Try these available bots instead:\n"
-                    for alt in available_bots[:5]:  # Show top 5
-                        error_message += f"  • {alt}\n"
-                
-                raise ValueError(error_message)
-            elif "Bot does not exist" in error_msg:
-                available_bots = await self.get_available_bots()
-                error_message = f"Bot '{bot_name}' does not exist.\n\n"
-                error_message += f"Try these available bots instead:\n"
-                for alt in available_bots[:5]:  # Show top 5
-                    error_message += f"  • {alt}\n"
-                raise ValueError(error_message)
-            elif "insufficient" in error_msg.lower() or "quota" in error_msg.lower():
-                raise ValueError(f"Insufficient credits or quota exceeded. Please check your Poe subscription.")
-            else:
-                # Re-raise the original error for other cases
-                raise e
-        
+            translated = await self._provider_error(e, bot_name)
+            if translated is e:
+                raise
+            raise translated from e
+
         # Save the bot response to history
         if save_history and conversation_id and full_response and self.enable_history:
             await self.history.add_message(
@@ -439,6 +377,103 @@ class PoeChatClient:
                 content=full_response,
                 bot_name=bot_name
             )
+
+    def provider_for_model(self, model: str) -> ProviderSpec:
+        """Which provider serves ``model`` (roster-driven; Poe for unknowns)."""
+        return get_provider(provider_for(model))
+
+    async def _stream(
+        self, model: str, messages: List[Dict[str, str]]
+    ) -> AsyncGenerator[str, None]:
+        """Stream a completion from whichever provider owns ``model``.
+
+        Routing is per model, so a Poe model and an OpenRouter model can be in
+        flight side by side (e.g. the two sides of a debate). Poe keeps its
+        native ``fastapi_poe`` transport rather than moving to the
+        OpenAI-compatible path, because the media bots return markdown media
+        links that :class:`ContentProcessor` is built to handle.
+        """
+        spec = self.provider_for_model(model)
+        api_key = api_key_for(spec, self.config)
+        if not api_key:
+            raise ValueError(
+                f"{spec.label} is not configured — set {spec.api_key_env} to use "
+                f"'{model}' (key from {spec.signup_url})."
+            )
+
+        if spec.name == OPENROUTER:
+            max_tokens = getattr(self.config, "openrouter_max_tokens", 0) or None
+            async for chunk in stream_openai_compatible(
+                spec,
+                api_key=api_key,
+                model=model,
+                # OpenAI-compatible providers use "assistant" natively; the
+                # assistant->bot rename is a Poe protocol quirk.
+                messages=[
+                    {"role": msg["role"], "content": msg["content"]} for msg in messages
+                ],
+                max_tokens=max_tokens,
+            ):
+                yield chunk
+        else:
+            poe_messages = [
+                fp.ProtocolMessage(
+                    role=self._convert_role_for_api(msg["role"]),
+                    content=msg["content"],
+                )
+                for msg in messages
+            ]
+            async for partial in fp.get_bot_response(
+                messages=poe_messages, bot_name=model, api_key=api_key
+            ):
+                if hasattr(partial, "text") and partial.text:
+                    # Poe streams literal "Generating..." placeholder chunks.
+                    if not self.content_processor.should_filter_chunk(partial.text):
+                        yield partial.text
+
+        # A completed stream is the cheapest possible evidence that this
+        # provider's API access is live; /status reads it instead of probing.
+        health.for_provider(spec.name).record_success(source="chat")
+
+    async def _provider_error(self, exc: Exception, model: str) -> Exception:
+        """Record a failed call and return the exception to raise.
+
+        Every failure is classified into the stable taxonomy in
+        :mod:`pypoe.core.provider_health` and recorded against the provider that
+        actually failed, so ``/status`` can report an account-level outage (a
+        lapsed subscription, exhausted credits, a revoked key) instead of
+        claiming ``ready`` while every chat fails — and so one dead provider
+        does not implicate a healthy one. Returns rather than raises so the
+        caller's ``raise`` keeps the control flow visible.
+        """
+        spec = self.provider_for_model(model)
+        reason, message = classify_exception(exc)
+
+        # Model-specific failures say nothing about provider health, so they
+        # are deliberately left *unrecorded* rather than recorded-then-cleared:
+        # writing any observation here would reset the tracker's freshness
+        # clock and could bury a genuine outage seen moments earlier.
+        if reason in MODEL_SCOPED_REASONS:
+            available = [m for m in await self.get_available_bots()
+                         if self.provider_for_model(m).name == spec.name]
+            if "Cannot access private bots" in str(exc):
+                alternatives = [b for b in available if "laude" in b][:3] or available[:5]
+                headline = f"Model '{model}' is not accessible (private or deprecated)."
+            else:
+                alternatives = available[:5]
+                headline = f"Model '{model}' does not exist on {spec.label}."
+            listing = "".join(f"  • {alt}\n" for alt in alternatives)
+            return ValueError(f"{headline}\n\nTry these models instead:\n{listing}")
+
+        health.for_provider(spec.name).record_failure(reason, message, source="chat")
+
+        if reason in ACCOUNT_BLOCKING_REASONS:
+            hint = recovery_hint(spec.name, reason)
+            return ValueError(f"{message}\n\n{hint}" if hint else message)
+
+        # Rate limits, transport failures, and anything else the provider
+        # reported keep their original exception so callers can retry.
+        return exc
 
     async def get_available_bots(self) -> List[str]:
         """

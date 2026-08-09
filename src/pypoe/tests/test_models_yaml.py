@@ -70,3 +70,65 @@ def _reset_models_module_after(monkeypatch):
     monkeypatch.delenv("PYPOE_MODELS_CONFIG", raising=False)
     sys.modules.pop("pypoe.core.models", None)
     importlib.import_module("pypoe.core.models")
+
+
+# ---------------------------------------------------------------------------
+# The shipped roster (config/models.yaml + models.example.yaml)
+# ---------------------------------------------------------------------------
+
+def _shipped(name):
+    """Load a roster file from src/pypoe/config/.
+
+    ``models.yaml`` is gitignored local config, so it is absent on a fresh
+    clone and in CI — skip rather than fail there. ``models.example.yaml`` is
+    committed and must always be present, so a missing one is a real error.
+    """
+    from pathlib import Path
+    import pypoe.core.models as m
+
+    path = Path(m.__file__).resolve().parent.parent / "config" / name
+    if not path.is_file():
+        if name == "models.yaml":
+            pytest.skip("models.yaml is local config; absent on a fresh clone")
+        raise AssertionError(f"committed roster {name} is missing")
+    return yaml.safe_load(path.read_text())
+
+
+@pytest.mark.parametrize("filename", ["models.yaml", "models.example.yaml"])
+def test_shipped_roster_defaults_to_glm_52_via_openrouter(filename):
+    """GLM-5.2 is the configured chat model, routed to OpenRouter.
+
+    Both platforms carry GLM-5.2; OpenRouter is the default because Poe's API
+    access is gated behind a subscription. Pinned so the two roster files can't
+    drift apart or silently lose the routing tag.
+    """
+    from pypoe.core.models import _parse_chat_models
+
+    data = _shipped(filename)
+    ids, providers = _parse_chat_models(data["chat_models"])
+
+    assert data["default"] == "z-ai/glm-5.2"
+    assert providers["z-ai/glm-5.2"] == "openrouter"
+    # The default must be in the roster, or the dropdown offers something the
+    # rest of the app treats as unknown.
+    assert data["default"] in ids
+    # The Poe route stays available for when the subscription is renewed.
+    assert "GLM-5.2" in ids
+    assert "GLM-5.2" not in providers  # bare string => Poe
+
+
+@pytest.mark.parametrize("filename", ["models.yaml", "models.example.yaml"])
+def test_shipped_roster_prices_every_active_glm_route(filename):
+    data = _shipped(filename)
+    pricing = data["pricing_usd_per_1m_tokens"]
+    assert pricing["z-ai/glm-5.2"] == {"prompt": 0.1120, "completion": 0.3520}
+    # The OpenRouter route is the cheap one; that's why it's the default.
+    assert pricing["z-ai/glm-5.2"]["prompt"] < pricing["GLM-5.2"]["prompt"]
+
+
+@pytest.mark.parametrize("filename", ["models.yaml", "models.example.yaml"])
+def test_shipped_roster_has_no_duplicate_ids(filename):
+    from pypoe.core.models import _parse_chat_models
+
+    ids, _ = _parse_chat_models(_shipped(filename)["chat_models"])
+    assert len(ids) == len(set(ids)), f"duplicate model ids in {filename}: {ids}"

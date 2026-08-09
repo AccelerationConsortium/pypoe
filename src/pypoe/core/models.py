@@ -63,38 +63,101 @@ def _config_path() -> Path:
     return Path(__file__).resolve().parent.parent / "config" / "models.yaml"
 
 
-def _load() -> tuple[list[str], str, dict]:
+def _load() -> tuple[list[str], str, dict, dict]:
     """Read models.yaml; on any failure fall back to the hardcoded values."""
+    _fallback = (_FALLBACK_CHAT_MODELS, _FALLBACK_DEFAULT, _FALLBACK_PRICING, {})
+
     path = _config_path()
     if not path.is_file():
-        return _FALLBACK_CHAT_MODELS, _FALLBACK_DEFAULT, _FALLBACK_PRICING
+        return _fallback
 
     try:
         import yaml  # PyYAML is a transitive dep of pypoe[web-ui]/[lab]
     except ImportError:
         logger.debug("PyYAML not available; using hardcoded model list")
-        return _FALLBACK_CHAT_MODELS, _FALLBACK_DEFAULT, _FALLBACK_PRICING
+        return _fallback
 
     try:
         with path.open("r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
     except Exception as exc:
         logger.warning("Could not parse %s (%s) — using hardcoded model list", path, exc)
-        return _FALLBACK_CHAT_MODELS, _FALLBACK_DEFAULT, _FALLBACK_PRICING
+        return _fallback
 
-    chat_models = data.get("chat_models")
-    if not isinstance(chat_models, list) or not all(isinstance(m, str) for m in chat_models):
-        chat_models = _FALLBACK_CHAT_MODELS
+    chat_models, providers = _parse_chat_models(data.get("chat_models"))
 
     default = data.get("default") if isinstance(data.get("default"), str) else _FALLBACK_DEFAULT
     pricing = data.get("pricing_usd_per_1m_tokens")
     if not isinstance(pricing, dict):
         pricing = _FALLBACK_PRICING
 
-    return list(chat_models), default, pricing
+    return chat_models, default, pricing, providers
 
 
-CHAT_MODELS, DEFAULT_CHAT_MODEL, MODEL_PRICING_USD_PER_1M_TOKENS = _load()
+def _parse_chat_models(raw) -> tuple[list[str], dict[str, str]]:
+    """Parse ``chat_models`` into ``(ids, {id: provider})``.
+
+    Two entry forms are accepted, so existing rosters keep working untouched:
+
+    * ``- Claude-Opus-4.8`` — a bare string, implicitly Poe.
+    * ``- {id: anthropic/claude-opus-4.8, provider: openrouter}`` — mapping form.
+
+    The model **id stays the single identity** everywhere else (UI dropdowns,
+    the ``bot_name`` / ``model_name`` history columns, group/debate validation),
+    so tagging a provider here adds a routing dimension without forcing a
+    schema or API-shape change downstream.
+    """
+    if not isinstance(raw, list):
+        return list(_FALLBACK_CHAT_MODELS), {}
+
+    ids: list[str] = []
+    providers: dict[str, str] = {}
+    for entry in raw:
+        if isinstance(entry, str):
+            ids.append(entry)
+        elif isinstance(entry, dict):
+            model_id = entry.get("id") or entry.get("name")
+            if not isinstance(model_id, str) or not model_id:
+                logger.warning("Skipping chat_models entry without an id: %r", entry)
+                continue
+            ids.append(model_id)
+            provider = entry.get("provider")
+            if isinstance(provider, str) and provider.strip():
+                providers[model_id] = provider.strip().lower()
+        else:
+            logger.warning("Skipping unrecognised chat_models entry: %r", entry)
+
+    if not ids:
+        return list(_FALLBACK_CHAT_MODELS), {}
+    return ids, providers
+
+
+(
+    CHAT_MODELS,
+    DEFAULT_CHAT_MODEL,
+    MODEL_PRICING_USD_PER_1M_TOKENS,
+    MODEL_PROVIDERS,
+) = _load()
+
+
+def provider_for(model: str) -> str:
+    """Which provider serves ``model``.
+
+    Falls back to the default provider (Poe) for anything unlisted, which keeps
+    free-text callers working — the CLI's ``--bot`` and the lab MCP's
+    ``consult_poe`` both accept models that are not in the roster.
+    """
+    from .providers import DEFAULT_PROVIDER
+
+    return MODEL_PROVIDERS.get(model, DEFAULT_PROVIDER)
+
+
+def models_by_provider() -> dict[str, list[str]]:
+    """The roster grouped by provider, in roster order."""
+    grouped: dict[str, list[str]] = {}
+    for model in CHAT_MODELS:
+        grouped.setdefault(provider_for(model), []).append(model)
+    return grouped
 
 
 def dollar_meter(rate_per_1m_tokens: float) -> str:

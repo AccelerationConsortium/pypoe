@@ -7,6 +7,18 @@ from pathlib import Path
 class Config:
     """Configuration class for PyPoe using official Poe API."""
     poe_api_key: str = ""
+    # Second model provider (CLAUDE.local.md D6). Routing is per model — see
+    # `chat_models` in config/models.yaml — so Poe and OpenRouter models can be
+    # used side by side rather than one replacing the other.
+    openrouter_api_key: str = ""
+    # OpenRouter bills per token where Poe is a flat subscription, so a
+    # runaway loop can actually spend money here. Ceiling on every OpenRouter
+    # completion; 0 disables the cap.
+    openrouter_max_tokens: int = 4096
+    # Report the provider as degraded once the remaining balance falls below
+    # this many dollars, so it surfaces before requests start failing.
+    # 0 disables the balance check.
+    openrouter_min_credits: float = 1.0
     database_path: str = ""
     web_username: str = ""       # vestigial: Basic-auth retired in favour of the ac_auth edge (§4.8)
     web_password: str = ""       # vestigial: see web_username
@@ -48,6 +60,13 @@ class Config:
         default_db_path = os.path.expanduser("~/.pypoe/single_webchat_history.db")
 
         self.poe_api_key = os.getenv("POE_API_KEY", self.poe_api_key)
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", self.openrouter_api_key)
+        self.openrouter_max_tokens = _parse_int(
+            os.getenv("PYPOE_OPENROUTER_MAX_TOKENS"), self.openrouter_max_tokens
+        )
+        self.openrouter_min_credits = _parse_float(
+            os.getenv("PYPOE_OPENROUTER_MIN_CREDITS"), self.openrouter_min_credits
+        )
         self.database_path = os.getenv("DATABASE_PATH", default_db_path)
         self.web_username = os.getenv("PYPOE_WEB_USERNAME", self.web_username)
         self.web_password = os.getenv("PYPOE_WEB_PASSWORD", self.web_password)
@@ -74,10 +93,15 @@ class Config:
         pypoe_dir = Path(self.database_path).parent
         pypoe_dir.mkdir(parents=True, exist_ok=True)
 
-        if not self.poe_api_key:
+        # At least one provider must be usable — but it need not be Poe. This
+        # used to demand POE_API_KEY unconditionally, which made a Poe-less
+        # deployment impossible: Config() raised, so every interface (CLI, web,
+        # Slack, MCP) failed at startup even when OpenRouter was configured.
+        if not self.poe_api_key and not self.openrouter_api_key:
             raise ValueError(
-                "POE_API_KEY is not set. Please get your API key from https://poe.com/api_key "
-                "and set it in your .env file or environment variables."
+                "No model provider is configured. Set POE_API_KEY "
+                "(https://poe.com/api_key) or OPENROUTER_API_KEY "
+                "(https://openrouter.ai/keys) in your .env file or environment."
             )
 
     def _load_env_files(self):
@@ -107,6 +131,22 @@ def _parse_bool(value, default: bool) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_int(value, default: int) -> int:
+    """Parse a string env var as an int, falling back to ``default``."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_float(value, default: float) -> float:
+    """Parse a string env var as a float, falling back to ``default``."""
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def get_config() -> Config:

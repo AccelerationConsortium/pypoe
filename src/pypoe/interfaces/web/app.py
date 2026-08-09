@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import secrets
 import socket
 import subprocess
@@ -20,7 +21,26 @@ from ...core.config import get_config, Config
 from ...core.client import PoeChatClient
 from ...core.history import owner_ctx, _UNSCOPED
 from ...core.logging_db import logger
-from ...core.models import CHAT_MODELS, DEFAULT_CHAT_MODEL
+from ...core.models import (
+    CHAT_MODELS,
+    DEFAULT_CHAT_MODEL,
+    models_by_provider,
+    provider_for,
+)
+from ...core.provider_health import (
+    ACCOUNT_BLOCKING_REASONS,
+    component_for,
+    probe_provider,
+    registry as health,
+)
+from ...core.providers import (
+    POE,
+    PROVIDERS,
+    api_key_for,
+    configured_providers,
+    fetch_credits,
+    get_provider,
+)
 
 # Standard-library logger for diagnostics that don't fit the structured
 # PyPoeLogger above (e.g. optional lab-integration wiring).
@@ -960,6 +980,169 @@ class WebApp:
             "expires_at": claim["expires_at"].isoformat(),
         }
 
+    @staticmethod
+    def _bot_providers(bots: List[str]) -> Dict[str, Dict[str, str]]:
+        """``{model: {provider, label}}`` for a roster.
+
+        Sent alongside the existing flat ``bots`` list rather than replacing
+        it: the model id remains the single identity everywhere (dropdowns, the
+        ``bot_name`` history column, group/debate validation), so this is
+        additive metadata that the three separate UIs can adopt at their own
+        pace without any of them breaking today.
+        """
+        out: Dict[str, Dict[str, str]] = {}
+        for model in bots:
+            spec = get_provider(provider_for(model))
+            out[model] = {"provider": spec.name, "label": spec.label}
+        return out
+
+    @staticmethod
+    def _provider_component_names(components: Dict[str, Any]) -> List[str]:
+        """Provider names that have a component in this envelope."""
+        return [
+            name for name in PROVIDERS
+            if f"{name}_api" in components
+        ]
+
+    def _probe_model_for(self, provider_name: str) -> str:
+        """Which model to probe a provider with.
+
+        The default chat model when that provider owns it — an access problem
+        on the model users actually get is what makes PyPoe unusable — else the
+        provider's first roster entry. ``PYPOE_HEALTH_PROBE_MODEL`` overrides
+        globally for a cheaper target.
+        """
+        override = os.environ.get("PYPOE_HEALTH_PROBE_MODEL")
+        if override:
+            return override
+        if provider_for(DEFAULT_CHAT_MODEL) == provider_name:
+            return DEFAULT_CHAT_MODEL
+        owned = models_by_provider().get(provider_name) or []
+        return owned[0] if owned else DEFAULT_CHAT_MODEL
+
+    async def _provider_components(
+        self, device_time: datetime
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], List[str], Optional[Dict[str, Any]], Dict[str, Any]]:
+        """One ComponentStatus per model provider, from real evidence.
+
+        This used to be a single ``poe_api`` component checked with
+        ``client.get_available_bots()`` — a hardcoded local list that never
+        touches the network — so it read ``connected`` whenever ``POE_API_KEY``
+        was merely set, and a lapsed Poe subscription (every chat failing with
+        ``subscription_required``) left the tile reporting ``ready``: exactly
+        the §2.2 violation the spec forbids.
+
+        Evidence comes from :mod:`pypoe.core.provider_health` — passively from
+        real chat traffic, actively from a ``max_tokens=1`` probe only when that
+        evidence has gone stale (see that module for the cost asymmetry that
+        makes the probe cheap).
+
+        Returns ``(components, metrics, healthy_provider_names, last_error,
+        details)``. Providers with no key configured are omitted entirely
+        rather than reported unhealthy — an unconfigured provider is not a
+        fault, and listing it would make a working single-provider deployment
+        permanently degraded.
+        """
+        components: Dict[str, Any] = {}
+        metrics: Dict[str, Any] = {}
+        details: Dict[str, Any] = {}
+        healthy: List[str] = []
+        errors: List[Tuple[str, Dict[str, Any]]] = []
+
+        names = configured_providers(self.config)
+        if not names:
+            # Nothing configured at all: report Poe as the canonical missing
+            # one so the envelope still explains why chat cannot work.
+            names = [POE]
+
+        for name in names:
+            spec = get_provider(name)
+            tracker = health.for_provider(name)
+            api_key = api_key_for(spec, self.config)
+
+            if not api_key:
+                tracker.record_not_configured()
+            elif tracker.needs_probe():
+                start = time.perf_counter()
+                ok, reason, message = await probe_provider(
+                    spec, api_key, self._probe_model_for(name)
+                )
+                metrics[f"{name}_response_time"] = self._metric(
+                    round((time.perf_counter() - start) * 1000, 2), "ms"
+                )
+                if ok:
+                    tracker.record_success(source="probe")
+                    # Balance only matters for a metered provider, and only
+                    # when it can actually be reached.
+                    tracker.record_credits(
+                        await fetch_credits(spec, api_key=api_key)
+                    )
+                else:
+                    tracker.record_failure(reason or "api_error", message or "", source="probe")
+
+            state = tracker.snapshot()
+            rendered = component_for(
+                state,
+                low_credit_threshold=(
+                    getattr(self.config, "openrouter_min_credits", 0.0)
+                    if spec.metered
+                    else 0.0
+                ),
+            )
+            component = self._component(
+                rendered["connected"], rendered["state"], rendered["message"]
+            )
+            if state.observed_at is not None:
+                component["last_event_at"] = state.observed_at.isoformat()
+            components[f"{name}_api"] = component
+
+            if state.credits:
+                details[f"{name}_credits"] = state.credits
+                remaining = state.credits.get("remaining")
+                if remaining is not None:
+                    metrics[f"{name}_credits_remaining"] = self._metric(remaining, "USD")
+
+            if rendered["connected"]:
+                healthy.append(name)
+            elif state.reason is not None:
+                errors.append(
+                    (
+                        name,
+                        {
+                            "code": state.code,
+                            "message": rendered["message"],
+                            # An account-level outage stops that provider doing
+                            # its job at all; a rate limit or a bad model name
+                            # does not.
+                            "severity": (
+                                "error"
+                                if state.reason in ACCOUNT_BLOCKING_REASONS
+                                else "warning"
+                            ),
+                            "timestamp": (state.observed_at or device_time).isoformat(),
+                        },
+                    )
+                )
+
+        details["providers"] = {
+            name: {
+                "label": get_provider(name).label,
+                "state": components[f"{name}_api"]["state"],
+                "models": models_by_provider().get(name, []),
+            }
+            for name in names
+            if f"{name}_api" in components
+        }
+
+        # Prefer an account-level error for last_error; among equals, the
+        # first configured provider wins so the field is deterministic.
+        last_error = None
+        if errors:
+            errors.sort(key=lambda item: item[1]["severity"] != "error")
+            last_error = errors[0][1]
+
+        return components, metrics, healthy, last_error, details
+
     async def _status_payload(self) -> Dict[str, Any]:
         now = time.monotonic()
         if self._status_cache is not None and now < self._status_cache_expires_at:
@@ -974,30 +1157,16 @@ class WebApp:
         details: Dict[str, Any] = {}
         last_error = None
 
-        api_key_configured = bool(self.config.poe_api_key)
-        poe_ok = False
-        poe_state = "not_configured"
-        poe_message = None
-        if api_key_configured:
-            try:
-                start = time.perf_counter()
-                await self.client.get_available_bots()
-                poe_ms = round((time.perf_counter() - start) * 1000, 2)
-                poe_ok = True
-                poe_state = "connected"
-                metrics["poe_response_time"] = self._metric(poe_ms, "ms")
-            except Exception as exc:
-                poe_state = "error"
-                poe_message = str(exc)
-                last_error = {
-                    "code": "poe_api_error",
-                    "message": str(exc),
-                    "severity": "warning",
-                    "timestamp": device_time.isoformat(),
-                }
-        else:
-            poe_message = "POE_API_KEY is not configured"
-        components["poe_api"] = self._component(poe_ok, poe_state, poe_message)
+        (
+            provider_components,
+            provider_metrics,
+            healthy_providers,
+            last_error,
+            provider_details,
+        ) = await self._provider_components(device_time)
+        components.update(provider_components)
+        metrics.update(provider_metrics)
+        details.update(provider_details)
 
         storage_ok = True
         storage_message = None
@@ -1026,7 +1195,12 @@ class WebApp:
         details.update(network_details)
         details["claimed_by"] = self._claimed_by()
 
-        required_components = ["web_ui", "poe_api", "storage", "internet", "tailscale"]
+        # Providers are graded as a group, not individually: with per-model
+        # routing PyPoe can still chat as long as *one* provider answers, so a
+        # dead Poe subscription alongside a working OpenRouter key is not a
+        # service-level fault. Their individual components still report the
+        # truth for whoever needs to see it.
+        required_components = ["web_ui", "storage", "internet", "tailscale"]
 
         # Mutual watchdog: Uptime Kuma alerts when PyPoe is down; PyPoe's
         # /status (polled by the lab dashboard) surfaces Kuma being down.
@@ -1047,14 +1221,46 @@ class WebApp:
             if kuma_ms is not None:
                 metrics["kuma_latency"] = self._metric(kuma_ms, "ms")
             required_components.append("uptime_kuma")
-        required_ok = all(components[key]["connected"] for key in required_components)
+        failed = [key for key in required_components if not components[key]["connected"]]
+        required_ok = not failed and bool(healthy_providers)
+
+        # Lead with the provider reason when model access is what's broken —
+        # that is the difference between "a sub-component is flaky" and "no
+        # chat request can succeed at all", and the operator needs the latter
+        # stated plainly on the tile rather than inferred from a component name.
+        provider_detail = None
+        if not healthy_providers:
+            broken = [
+                (get_provider(name).label, components[f"{name}_api"].get("message"))
+                for name in configured_providers(self.config) or [POE]
+                if f"{name}_api" in components
+                and not components[f"{name}_api"]["connected"]
+            ]
+            if broken:
+                provider_detail = "; ".join(
+                    f"{label}: {msg}" for label, msg in broken if msg
+                ) or None
+
         if required_ok:
             equipment_status = "ready"
             message = None
+            if len(healthy_providers) < len(self._provider_component_names(components)):
+                # Still fully operational, but say which source is carrying it.
+                message = "Serving via " + ", ".join(
+                    get_provider(name).label for name in healthy_providers
+                )
         elif components["web_ui"]["connected"] and components["storage"]["connected"]:
             equipment_status = "degraded"
-            failed = [key for key in required_components if not components[key]["connected"]]
-            message = f"Degraded components: {', '.join(failed)}"
+            parts = []
+            if not healthy_providers:
+                parts.append(
+                    f"No model provider available: {provider_detail}"
+                    if provider_detail
+                    else "No model provider available"
+                )
+            if failed:
+                parts.append(f"Degraded components: {', '.join(failed)}")
+            message = " | ".join(parts)
         else:
             equipment_status = "error"
             message = "PyPoe web service has critical component failures"
@@ -1841,12 +2047,14 @@ class WebApp:
                         
                         return JSONResponse({
                             "bots": bots,
+                            "providers": self._bot_providers(bots),
                             "locking": locking_info
                         })
-                
+
                 # Default response without locking information
                 return JSONResponse({
                     "bots": bots,
+                    "providers": self._bot_providers(bots),
                     "locking": {
                         "conversation_locked": False,
                         "locked_bot": None,
