@@ -35,7 +35,7 @@ Browser ──► Next.js (web/, :8000) ──► FastAPI aggregator (:8001) ─
                                                │
    Uptime Kuma ──── /alerts/kuma ──► claude -p ─┘
                                        │
-                                       ├─► consult_poe (PoeChatClient → Poe API)
+                                       ├─► consult_poe (PoeChatClient → Poe / OpenRouter)
                                        └─► ask_human  (Slack thread reply)
 ```
 
@@ -65,7 +65,7 @@ Three files cooperate, all under **`src/pypoe/config/`**:
   slash-command prefix, alert channel, consult model list, …).
   *Gitignored*. Copy `slack.example.yaml` next to it as a starting
   point.
-- **`models.yaml`** is the Poe model catalog used by every PyPoe
+- **`models.yaml`** is the model catalog (Poe + OpenRouter) used by every PyPoe
   interface (CLI/web/slack/lab). *Gitignored*. Copy
   `models.example.yaml` next to it. The `consult.models` entries in
   `slack.yaml` MUST exist in this file's `chat_models` list.
@@ -95,17 +95,24 @@ lab:
     agent_source: claude-agent          # stamped into observations
     http_timeout_s: 10                  # aggregator HTTP read timeout
   consult:
-    enabled: true                       # ask Poe models for second opinions
-    models:                             # one consult_poe call per entry
-      - GPT-5.4                         # Poe bots — names must match an
-      - GLM-5.2                       # entry in config/models.yaml::chat_models
+    enabled: true                       # ask other models for second opinions
+    models:                             # one consult_poe call per entry; names
+      - z-ai/glm-5.2                    # must match an entry in
+      - deepseek/deepseek-v4-flash-0731 # config/models.yaml::chat_models
 ```
 
 Two distinct models are in play: the **investigator** runs on the local
 Claude Code CLI (`investigation_model`, default `claude-sonnet-5`, env
-`LAB_INVESTIGATION_MODEL`) on your Claude subscription — *not* Poe; the
-**second opinions** (`consult.models`, default `GPT-5.4`, `GLM-5.2`) are
-**Poe-hosted** bots reached via `POE_API_KEY`.
+`LAB_INVESTIGATION_MODEL`) on your Claude subscription — *not* a chat
+provider; the **second opinions** (`consult.models`, default
+`z-ai/glm-5.2`, `deepseek/deepseek-v4-flash-0731`) go through PyPoe's
+provider seam, so each is routed to whichever provider its
+`models.yaml::chat_models` entry declares — OpenRouter for both defaults.
+
+Keep `consult.models` in step with the catalog: a name absent from
+`chat_models` still resolves (to the default provider) and then fails at call
+time. The previous defaults were Poe-routed and stopped working when the Poe
+subscription lapsed.
 
 When `consult.enabled` is true (default), every `/alerts/kuma`
 investigation requires Claude to call `consult_poe` once per model
@@ -132,26 +139,24 @@ lab:
 ### `models.yaml` schema
 
 ```yaml
-default: Claude-Opus-4.8             # used wherever DEFAULT_CHAT_MODEL is needed
+default: z-ai/glm-5.2                # used wherever DEFAULT_CHAT_MODEL is needed
 chat_models:                         # the list PyPoe's UIs offer to users
-  - Claude-Opus-4.8
-  - Claude-Sonnet-4.6
-  - Claude-Opus-4.7
-  - GPT-5.4
-  - GPT-4-Turbo
-  - Grok-4
-  - Gemini-3.1-Pro
-  - Gemini-3-Flash
-  - GLM-5.2
+  # A mapping names its provider; a bare string means Poe.
+  - {id: z-ai/glm-5.2, provider: openrouter}
+  - {id: deepseek/deepseek-v4-flash-0731, provider: openrouter}
+  - Claude-Opus-4.8                  # Poe — needs POE_API_KEY
   - Kimi-K3                          # live Poe bot, not yet in the pricing feed
-pricing_usd_per_1m_tokens:           # Poe pricing snapshot; controls
-  Claude-Opus-4.8:    { prompt: 4.2929,  completion: 21.4646  }   # the
-  Claude-Sonnet-4.6:  { prompt: 2.5758,  completion: 12.8788  }   # $-meter
+pricing_usd_per_1m_tokens:           # controls the $-meter shown in Slack
+  z-ai/glm-5.2:                    { prompt: 0.1120, completion: 0.3520  }
+  deepseek/deepseek-v4-flash-0731: { prompt: 0.0900, completion: 0.1800  }
+  Claude-Opus-4.8:  { prompt: 4.2929, completion: 21.4646 }
   # ... (etc — see config/models.example.yaml)
 ```
 
-Run `scripts/utils/update_models.py` to test which entries in
-`chat_models` are currently live on Poe before editing the list.
+Run `scripts/utils/update_models.py` to test which Poe entries are currently
+live before editing the list. OpenRouter ids must match its slugs exactly —
+see <https://openrouter.ai/models>, whose `/api/v1/models` endpoint also
+publishes live per-token pricing (multiply by 1e6 for the table above).
 
 ### Override precedence
 
@@ -177,7 +182,8 @@ catalog.
 ```
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_SIGNING_SECRET=...
-POE_API_KEY=...
+OPENROUTER_API_KEY=sk-or-...
+POE_API_KEY=...                      # optional; only for Poe-routed models
 ```
 
 Optionally, `PYPOE_ENABLE_LAB=1` in `.env` will wire `/lab-*` and
@@ -312,7 +318,8 @@ all non-healthy devices via `list_equipment()`.
 
 **Auth:** the `claude` CLI authenticates with **Claude Team** OAuth
 (run `claude` once on the host), so no Anthropic API key is needed in
-the PyPoe environment. `consult_poe` uses your `POE_API_KEY`.
+the PyPoe environment. `consult_poe` uses whichever provider key the consulted
+model's catalog entry requires — `OPENROUTER_API_KEY` for both defaults.
 
 **Hardened, self-contained invocation.** The webhook drives `claude`
 with the same safeguards as the dashboard assistant, so it does **not**
@@ -479,8 +486,8 @@ the message field intact when read back via `recent_events()`.
 | `pypoe lab-status` says "Aggregator unreachable" | Aggregator service down or `LAB_API_URL` wrong | `curl $LAB_API_URL/api/health`; check `journalctl -u ac-organic-lab-api` on the dashboard host. |
 | `/lab-*` commands missing in Slack | `LAB_API_URL` / `PYPOE_ENABLE_LAB` unset, or `[lab]` extra not installed | Set env var and reinstall with `pip install -e ".[lab]"`. Restart `pypoe slack`. |
 | `claude` exits 127 in Kuma thread | `claude` CLI not on PATH on the PyPoe host | Install Claude Code locally; run `claude` once to OAuth into Claude Team. |
-| `consult_poe` returns `returncode: 2` with "not accessible" | `POE_API_KEY` unset, expired, or the model name isn't in `models.yaml::chat_models` | Set `POE_API_KEY` in `.env`; double-check `consult.models` entries match `chat_models`. |
-| `consult_poe` returns `returncode: 1` | Transient network error or Poe API blip | Investigation continues; Claude notes the failure in the summary. Retry next alert. |
+| `consult_poe` returns `returncode: 2` with "not accessible" | The consulted model's provider key is unset/expired, or the name isn't in `models.yaml::chat_models` | Set that provider's key in `.env` (`OPENROUTER_API_KEY` / `POE_API_KEY`); check `consult.models` entries match `chat_models` exactly — an unlisted name silently routes to the default provider and fails. |
+| `consult_poe` returns `returncode: 1` | Transient network error or a provider-side blip | Investigation continues; Claude notes the failure in the summary. Retry next alert. |
 | `ask_human` immediately times out | `SLACK_BOT_TOKEN` missing or the bot isn't in `LAB_SLACK_CHANNEL` | Invite the bot to the channel, double-check token. |
 | Observations don't appear in the dashboard sidebar | Severity / source ended up in `context` instead of `extra` | This package always uses `extra`. If you wrote a custom MCP tool, port it. |
 | `/sdl2-lab-status` says "did not respond" in Slack | Slack app config doesn't declare that command name | Each `/lab-*` (or `/<prefix>-…`) must be added in the Slack app admin UI before the bot can receive it. Reinstall the app after adding. |

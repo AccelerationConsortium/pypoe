@@ -1,8 +1,13 @@
 # PyPoe
 
-A Python client for Poe.com that exposes Poe's models through three
-interfaces — a CLI, a local web UI, and a Slack bot — all sharing a
-single SQLite conversation history at `~/.pypoe/single_webchat_history.db`.
+A Python chat client that exposes models from **Poe** and **OpenRouter**
+through three interfaces — a CLI, a local web UI, and a Slack bot — all sharing
+a single SQLite conversation history at `~/.pypoe/single_webchat_history.db`.
+
+Routing is **per model**: each entry in the model catalog names its provider, so
+a Poe model and an OpenRouter model can be used side by side, including as the
+two sides of a debate. At least one provider key is required; it need not be
+Poe. See [Model providers](#model-providers).
 
 ## Three interfaces
 
@@ -70,11 +75,13 @@ The web UI and Slack bot share the same `web-ui` extra (both depend on
 
 ## Quickstart
 
-1. Get a Poe API key from [poe.com/api_key](https://poe.com/api_key).
+1. Get a key from at least one provider — [OpenRouter](https://openrouter.ai/keys)
+   or [Poe](https://poe.com/api_key).
 2. Create a `.env` in the repo root:
 
    ```env
-   POE_API_KEY=your-poe-api-key
+   OPENROUTER_API_KEY=sk-or-...
+   POE_API_KEY=your-poe-api-key      # optional; only for Poe-routed models
    ```
 
 3. Pick an interface:
@@ -87,6 +94,44 @@ The web UI and Slack bot share the same `web-ui` extra (both depend on
 
 For network access, authentication, Slack app setup, or running as a
 service, see the topic-specific docs below.
+
+## Model providers
+
+The catalog lives in `src/pypoe/config/models.yaml` (gitignored; copy from
+`models.example.yaml`). Each entry names its provider — a bare string is a Poe
+model, a mapping is anything else:
+
+```yaml
+default: z-ai/glm-5.2
+
+chat_models:
+  - {id: z-ai/glm-5.2, provider: openrouter}
+  - {id: deepseek/deepseek-v4-flash-0731, provider: openrouter}
+  - Claude-Opus-4.8            # bare string => Poe
+```
+
+| Provider | Key | Billing | Notes |
+|---|---|---|---|
+| `openrouter` | `OPENROUTER_API_KEY` | **per token** | ~400 models; ids must match [OpenRouter's slugs](https://openrouter.ai/models) exactly |
+| `poe` | `POE_API_KEY` | flat subscription | the only provider with image/video generation bots |
+
+A provider with no key configured is skipped: its models report a clear
+"not configured" error if selected, and `/status` omits it rather than calling
+it unhealthy. The service is healthy as long as **one** provider can answer, so
+a lapsed Poe subscription alongside a working OpenRouter key is not an outage.
+
+**Spend guards** (OpenRouter only, since Poe is a flat subscription):
+
+```env
+PYPOE_OPENROUTER_MAX_TOKENS=4096   # ceiling on every completion; 0 disables
+PYPOE_OPENROUTER_MIN_CREDITS=1.0   # USD below which /status reports degraded
+```
+
+`GET /status` carries one component per configured provider (`poe_api`,
+`openrouter_api`) with a provider-qualified error code — `poe_subscription_required`,
+`openrouter_auth_failed` — plus the remaining OpenRouter balance. Health is
+observed from real traffic, with a `max_tokens=1` probe only when that evidence
+goes stale.
 
 ## Documentation
 

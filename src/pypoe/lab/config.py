@@ -77,13 +77,19 @@ class ConsultSection:
     and synthesise their responses into the Slack summary. When False
     (or ``models`` is empty), Claude investigates solo.
 
-    These are **Poe-hosted** bots reached via ``POE_API_KEY`` (distinct
-    from the local-CLI investigator model above). Env override:
-    ``LAB_CONSULT_MODELS`` (comma-separated).
+    These are reached through PyPoe's provider seam (distinct from the
+    local-CLI investigator model above), so each name must appear in
+    ``models.yaml::chat_models`` and is routed to whichever provider that
+    entry declares. Env override: ``LAB_CONSULT_MODELS`` (comma-separated).
+
+    A name that is not in the roster still resolves — to the default provider —
+    and will fail at call time, so keep this list in step with the catalog. The
+    previous default (``GPT-5.4``, ``GLM-5.2``) was Poe-routed and became
+    unreachable when the Poe subscription lapsed.
     """
 
     enabled: bool = True
-    models: tuple[str, ...] = ("GPT-5.4", "GLM-5.2")
+    models: tuple[str, ...] = ("z-ai/glm-5.2", "deepseek/deepseek-v4-flash-0731")
 
 
 @dataclass(frozen=True)

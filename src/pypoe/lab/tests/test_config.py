@@ -114,7 +114,22 @@ def test_non_numeric_env_int_is_ignored(monkeypatch):
 def test_consult_defaults(monkeypatch):
     cfg = lab_config.load_config()
     assert cfg.consult.enabled is True
-    assert cfg.consult.models == ("GPT-5.4", "GLM-5.2")
+    assert cfg.consult.models == lab_config.ConsultSection().models
+
+
+def test_consult_defaults_are_reachable_models():
+    """Every default consult model must be in the catalog.
+
+    A name absent from ``chat_models`` still resolves — to the default
+    provider — and only fails at call time, inside an alert investigation
+    where nobody is watching. The previous defaults (``GPT-5.4``, ``GLM-5.2``)
+    were Poe-routed and silently became unreachable when that subscription
+    lapsed.
+    """
+    from pypoe.core.models import CHAT_MODELS
+
+    for model in lab_config.ConsultSection().models:
+        assert model in CHAT_MODELS, f"consult model {model!r} is not in chat_models"
 
 
 def test_investigation_model_default_is_sonnet_5(monkeypatch):

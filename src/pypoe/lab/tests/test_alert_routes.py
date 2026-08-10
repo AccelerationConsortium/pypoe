@@ -133,8 +133,13 @@ def test_kuma_webhook_down_posts_investigating_then_summary(monkeypatch):
     prompt = investigations[0]
     assert "aggregator" in prompt
     assert "connection refused" in prompt
-    # Default consult models (ConsultSection — see pypoe.lab.config).
-    assert "GPT-5.4" in prompt and "GLM-5.2" in prompt
+    # Default consult models (ConsultSection — see pypoe.lab.config). Derived
+    # rather than hardcoded so changing the catalog can't leave this asserting
+    # models nobody can reach any more.
+    from pypoe.lab.config import ConsultSection
+
+    for model in ConsultSection().models:
+        assert model in prompt
     assert len(posted) == 2
     threaded = posted[1]
     assert threaded["thread_ts"] == "ts-1"  # threaded under the first message

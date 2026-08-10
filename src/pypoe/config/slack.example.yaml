@@ -68,5 +68,5 @@ lab:
     # Each model is called once per investigation. Names must match an
     # entry in src/pypoe/config/models.yaml (chat_models list).
     models:
-      - GPT-5.4
-      - GLM-5.2
+      - z-ai/glm-5.2
+      - deepseek/deepseek-v4-flash-0731
