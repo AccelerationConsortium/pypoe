@@ -69,6 +69,37 @@ class McpSection:
 
 
 @dataclass(frozen=True)
+class AssistantSection:
+    """Self-healing monitor for the SDL assistant (health endpoint + service).
+
+    When ``monitor_enabled`` is True, a background task in the PyPoe web
+    service probes the assistant's ``/api/assistant/health`` every
+    ``probe_interval_s`` seconds. On a DOWN transition it posts a Slack alert,
+    attempts a bounded set of common fixes (verify / restart the backing API
+    service, check the OpenRouter key is present), re-probes after each, and
+    reports what succeeded vs failed as a threaded reply; it posts a recovery
+    line when health returns. See ``alert_routes`` (``AssistantMonitor``).
+
+    The backing service runs as ``sdl2`` with ``Restart=on-failure``, so a
+    ``kill`` of its MainPID is enough to relaunch it without sudo.
+
+    Env overrides:
+        LAB_ASSISTANT_MONITOR_ENABLED, LAB_ASSISTANT_HEALTH_URL,
+        LAB_ASSISTANT_PROBE_INTERVAL_S, LAB_ASSISTANT_SERVICE,
+        LAB_ASSISTANT_ENV_ROOT, LAB_ASSISTANT_RESTART_WAIT_S.
+    """
+
+    monitor_enabled: bool = False
+    health_url: str = "http://127.0.0.1:8001/api/assistant/health"
+    probe_interval_s: float = 60.0
+    service_name: str = "ac-organic-lab-api.service"
+    env_root: str = "/home/sdl2/caoyang/ac-organic-lab"
+    restart_wait_s: float = 10.0
+    #: consecutive failing probes before an alert fires (damp flapping)
+    failures_to_alert: int = 1
+
+
+@dataclass(frozen=True)
 class ConsultSection:
     """Which Poe models the alert handler asks for a second opinion.
 
@@ -101,6 +132,7 @@ class LabConfig:
     alerts: AlertsSection = field(default_factory=AlertsSection)
     mcp: McpSection = field(default_factory=McpSection)
     consult: ConsultSection = field(default_factory=ConsultSection)
+    assistant: AssistantSection = field(default_factory=AssistantSection)
 
     # Where the YAML actually came from (None if no file was found).
     source_path: Optional[Path] = None
@@ -288,12 +320,56 @@ def load_config() -> LabConfig:
 
     consult = ConsultSection(enabled=consult_enabled, models=consult_models)
 
+    env_monitor = _env_bool("LAB_ASSISTANT_MONITOR_ENABLED")
+    yaml_monitor = _dig(lab_root, "assistant", "monitor_enabled")
+    if env_monitor is not None:
+        monitor_enabled = env_monitor
+    elif isinstance(yaml_monitor, bool):
+        monitor_enabled = yaml_monitor
+    else:
+        monitor_enabled = AssistantSection.__dataclass_fields__["monitor_enabled"].default
+
+    assistant = AssistantSection(
+        monitor_enabled=monitor_enabled,
+        health_url=(
+            os.environ.get("LAB_ASSISTANT_HEALTH_URL")
+            or _dig(lab_root, "assistant", "health_url")
+            or AssistantSection.__dataclass_fields__["health_url"].default
+        ),
+        probe_interval_s=(
+            _env_float("LAB_ASSISTANT_PROBE_INTERVAL_S")
+            or _dig(lab_root, "assistant", "probe_interval_s")
+            or AssistantSection.__dataclass_fields__["probe_interval_s"].default
+        ),
+        service_name=(
+            os.environ.get("LAB_ASSISTANT_SERVICE")
+            or _dig(lab_root, "assistant", "service_name")
+            or AssistantSection.__dataclass_fields__["service_name"].default
+        ),
+        env_root=(
+            os.environ.get("LAB_ASSISTANT_ENV_ROOT")
+            or _dig(lab_root, "assistant", "env_root")
+            or AssistantSection.__dataclass_fields__["env_root"].default
+        ),
+        restart_wait_s=(
+            _env_float("LAB_ASSISTANT_RESTART_WAIT_S")
+            or _dig(lab_root, "assistant", "restart_wait_s")
+            or AssistantSection.__dataclass_fields__["restart_wait_s"].default
+        ),
+        failures_to_alert=(
+            _env_int("LAB_ASSISTANT_FAILURES_TO_ALERT")
+            or _dig(lab_root, "assistant", "failures_to_alert")
+            or AssistantSection.__dataclass_fields__["failures_to_alert"].default
+        ),
+    )
+
     cfg = LabConfig(
         api_url=api_url,
         slack=slack,
         alerts=alerts,
         mcp=mcp,
         consult=consult,
+        assistant=assistant,
         source_path=src,
     )
     _LOADED["cfg"] = cfg

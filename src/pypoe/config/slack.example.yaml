@@ -70,3 +70,37 @@ lab:
     models:
       - z-ai/glm-5.2
       - deepseek/deepseek-v4-flash-0731
+
+  assistant:
+    # Self-healing monitor for the SDL assistant (the dashboard bubble backed
+    # by the ac-organic-lab API + OpenRouter). When enabled, a background task
+    # probes the assistant health endpoint every `probe_interval_s` seconds.
+    # On a DOWN transition it posts a Slack alert, tries common fixes (start /
+    # bounce the backing API service, verify the OpenRouter key is present),
+    # and posts a threaded report of what succeeded vs failed; recovery posts a
+    # :white_check_mark: line. You can also trigger a self-heal on demand by
+    # POSTing to /alerts/assistant.
+    #
+    # The backing service is relaunched WITHOUT sudo: it runs as this user with
+    # Restart=on-failure, so a SIGKILL of its MainPID is enough to bounce it.
+    monitor_enabled: false
+
+    # Assistant health endpoint (the direct API port, bypassing the web proxy,
+    # so a proxy/web fault and an API fault are distinguishable).
+    health_url: http://127.0.0.1:8001/api/assistant/health
+
+    # How often (seconds) to probe.
+    probe_interval_s: 60
+
+    # systemd unit to start/bounce when the assistant is unhealthy.
+    service_name: ac-organic-lab-api.service
+
+    # Repo root whose .env we check for ASSISTANT_OPENAI_API_KEY presence.
+    env_root: /home/sdl2/caoyang/ac-organic-lab
+
+    # Seconds to wait after a restart before re-probing.
+    restart_wait_s: 10
+
+    # Consecutive failing probes before an alert fires (damp flapping).
+    failures_to_alert: 1
+

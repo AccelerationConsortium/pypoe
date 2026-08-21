@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -659,3 +660,325 @@ async def _post_slack(
         kwargs["thread_ts"] = thread_ts
     resp = await slack.chat_postMessage(**kwargs)
     return resp.get("ts")
+
+
+# ---------------------------------------------------------------------------
+# SDL Assistant self-healing monitor
+# ---------------------------------------------------------------------------
+# Watches the assistant's /api/assistant/health endpoint. On a DOWN transition
+# it posts a Slack alert, attempts a bounded set of common fixes (verify /
+# restart the backing API service, check the OpenRouter key is present),
+# re-probes after each, and posts a threaded report of what succeeded vs
+# failed. Recovery posts a :white_check_mark: line. Runs either as an
+# in-process periodic task (AssistantSection.monitor_enabled) or on demand via
+# POST /alerts/assistant.
+
+
+def _service_mainpid(service: str) -> Optional[str]:
+    """Best-effort MainPID of a systemd unit, without sudo.
+
+    ``systemctl show -p MainPID --value`` needs no privileges to *read*. The
+    service is then relaunched via ``kill`` (see ``_restart_service``); this
+    only works because the unit runs as the same user with Restart=on-failure.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", service, "-p", "MainPID", "--value"],
+            capture_output=True, text=True, timeout=10,
+        )
+        pid = out.stdout.strip()
+        return pid if pid.isdigit() else None
+    except Exception:  # pragma: no cover - best-effort
+        return None
+
+
+def _service_active(service: str) -> bool:
+    """Whether a systemd unit is currently active (is-active exit 0)."""
+    try:
+        return subprocess.run(
+            ["systemctl", "is-active", service],
+            capture_output=True, text=True, timeout=10,
+        ).returncode == 0
+    except Exception:  # pragma: no cover - best-effort
+        return False
+
+
+def _restart_service(service: str) -> tuple[bool, str]:
+    """Relaunch a user-owned Restart=on-failure unit without sudo.
+
+    SIGKILL the unit's MainPID; systemd sees the abnormal exit and relaunches it
+    within RestartSec (default ~100ms-5s). Falls back to ``systemctl restart``
+    (which may require policy) if no PID is resolvable.
+    """
+    pid = _service_mainpid(service)
+    if pid:
+        try:
+            subprocess.run(
+                ["kill", "-KILL", pid], capture_output=True, text=True, timeout=10,
+            )
+            return True, f"killed PID {pid}; Restart=on-failure relaunches {service}"
+        except Exception as exc:  # pragma: no cover
+            return False, f"kill failed: {exc}"
+    try:
+        subprocess.run(
+            ["systemctl", "restart", service],
+            capture_output=True, text=True, timeout=30,
+        )
+        return True, f"systemctl restart {service}"
+    except Exception as exc:  # pragma: no cover
+        return False, f"restart failed: {exc}"
+
+
+def _assistant_key_present(env_root: str) -> tuple[bool, str]:
+    """Confirm ASSISTANT_OPENAI_API_KEY is set (non-empty) in the repo .env.
+
+    This is the classic silent-failure cause: the assistant health endpoint
+    reports ``configured:false`` when the key is missing. We only check
+    presence — never read the value back into the transcript.
+    """
+    try:
+        p = Path(env_root) / ".env"
+        if not p.is_file():
+            return False, f"{p} not found"
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("ASSISTANT_OPENAI_API_KEY="):
+                val = line.split("=", 1)[1].strip()
+                if val and not val.startswith('"') and not val.startswith("'"):
+                    return True, "key present"
+        return False, "ASSISTANT_OPENAI_API_KEY missing/unset in .env"
+    except Exception as exc:  # pragma: no cover
+        return False, f"could not read .env: {exc}"
+
+
+async def _assistant_health_ok(
+    lab: "LabClient", url: str
+) -> tuple[bool, str]:
+    """Probe the assistant health endpoint; return (healthy, human detail).
+
+    Treats as healthy when the request succeeds and the JSON payload reports
+    ``configured: true`` (the same signal that gates the assistant bubble).
+    Any transport error, non-200, or ``configured:false`` is a DOWN.
+    """
+    detail = f"GET {url}"
+    try:
+        resp = await lab._client.get(url)
+    except Exception as exc:  # httpx errors
+        return False, f"{detail} -> unreachable ({type(exc).__name__})"
+    if resp.status_code != 200:
+        return False, f"{detail} -> HTTP {resp.status_code}"
+    try:
+        data = resp.json()
+    except Exception:
+        return False, f"{detail} -> non-JSON response"
+    if not isinstance(data, dict):
+        return False, f"{detail} -> unexpected payload shape"
+    configured = data.get("configured")
+    if configured is not True:
+        return False, (
+            f"{detail} -> configured=false "
+            f"(backend={data.get('backend')!r}); likely missing OpenRouter key"
+        )
+    return True, (
+        f"{detail} -> ok (backend={data.get('backend')!r}, "
+        f"model={data.get('model')!r})"
+    )
+
+
+async def _assistant_remediate(
+    cfg, lab: "LabClient"
+) -> tuple[bool, list[tuple[str, bool, str]]]:
+    """Attempt a bounded set of common fixes; return (healthy_now, steps).
+
+    Each step is ``(label, succeeded, detail)``. Steps:
+      1. Re-probe (baseline) — if the service is down but health recovers on a
+         plain retry (transient), we're done.
+      2. Verify the backing API service is active; if not, try to start it.
+      3. Restart the service (a wedged-but-running process needs a bounce).
+      4. Verify the OpenRouter key is present (report-only fix; we cannot mint a
+         secret). Re-probe after each mutating step.
+    """
+    from .config import load_config
+    cfg = cfg or load_config()
+    asst = cfg.assistant
+    steps: list[tuple[str, bool, str]] = []
+
+    ok, det = await _assistant_health_ok(lab, asst.health_url)
+    if ok:
+        return True, [("baseline re-probe", True, det)]
+
+    # 1. If the backing service is down, try to start it.
+    if not _service_active(asst.service_name):
+        st_ok, st_det = _restart_service(asst.service_name)
+        steps.append((f"start {asst.service_name}", st_ok, st_det))
+        await asyncio.sleep(asst.restart_wait_s)
+        ok, det = await _assistant_health_ok(lab, asst.health_url)
+        if ok:
+            return True, steps
+    else:
+        steps.append((f"service {asst.service_name} active", True, "active"))
+
+    # 2. Bounce the service (wedged process still answers on the port).
+    b_ok, b_det = _restart_service(asst.service_name)
+    steps.append((f"restart {asst.service_name}", b_ok, b_det))
+    await asyncio.sleep(asst.restart_wait_s)
+    ok, det = await _assistant_health_ok(lab, asst.health_url)
+    if ok:
+        return True, steps
+
+    # 3. Verify the key (report-only).
+    k_ok, k_det = _assistant_key_present(asst.env_root)
+    steps.append(("ASSISTANT_OPENAI_API_KEY present", k_ok, k_det))
+
+    return False, steps + [("final re-probe", False, det)]
+
+
+async def _report_remediation(
+    channel: str, thread_ts: Optional[str], recovered: bool, steps
+) -> None:
+    lines = []
+    for label, ok, det in steps:
+        mark = ":white_check_mark:" if ok else ":x:"
+        lines.append(f"{mark} {label} — {det}")
+    head = (
+        f"*SDL Assistant* :green_circle: recovered after self-heal:"
+        if recovered
+        else f"*SDL Assistant* :red_circle: STILL DOWN after self-heal:"
+    )
+    text = "\n".join([head, *lines])
+    try:
+        await _post_slack(channel, text, thread_ts=thread_ts)
+    except Exception as exc:  # pragma: no cover
+        logger.error("Failed to post SDL assistant remediation report: %s", exc)
+
+
+async def _assistant_alert_once(
+    channel: str, lab: "LabClient", cfg
+) -> Optional[str]:
+    """Full down-handling for the assistant: alert -> remediate -> report.
+
+    Returns the thread_ts of the threaded remediation report (for tests / chained
+    recovery, or None if nothing was posted).
+    """
+    asst = cfg.assistant
+    ok, det = await _assistant_health_ok(lab, asst.health_url)
+    if ok:
+        # Not down (could be a manual probe or a probe that recovered between
+        # the alert and this call) — nothing to remediate.
+        return None
+    try:
+        thread_ts = await _post_slack(
+            channel,
+            f":rotating_light: *SDL Assistant* DOWN — {det} :mag: trying fixes…",
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.error("Failed to post SDL assistant alert: %s", exc)
+        thread_ts = None
+
+    recovered, steps = await _assistant_remediate(cfg, lab)
+    await _report_remediation(channel, thread_ts, recovered, steps)
+    return thread_ts
+
+
+async def _assistant_recover(channel: str) -> None:
+    try:
+        await _post_slack(channel, ":white_check_mark: *SDL Assistant* recovered.")
+    except Exception as exc:  # pragma: no cover
+        logger.error("Failed to post SDL assistant recovery: %s", exc)
+
+
+async def _assistant_monitor_loop(
+    channel: str, lab: "LabClient", cfg, semaphore: "asyncio.Semaphore"
+) -> None:
+    """Periodic probe loop. Alerts on a DOWN transition, recovers on UP."""
+    asst = cfg.assistant
+    was_down = False
+    consecutive_failures = 0
+    while True:
+        await asyncio.sleep(asst.probe_interval_s)
+        ok, _det = await _assistant_health_ok(lab, asst.health_url)
+        if ok:
+            consecutive_failures = 0
+            if was_down:
+                was_down = False
+                await _assistant_recover(channel)
+            continue
+        consecutive_failures += 1
+        if consecutive_failures < asst.failures_to_alert:
+            continue
+        if was_down:
+            # Already alerting earlier — re-run remediation quietly on each
+            # tick (rate-limited by the semaphore) but don't re-fire the alert.
+            try:
+                async with semaphore:
+                    recovered, steps = await _assistant_remediate(cfg, lab)
+                    if recovered:
+                        was_down = False
+                        await _assistant_recover(channel)
+                    else:
+                        await _report_remediation(channel, None, False, steps)
+            except Exception as exc:  # pragma: no cover
+                logger.error("SDL assistant monitor remediation failed: %s", exc)
+            continue
+        was_down = True
+        try:
+            async with semaphore:
+                await _assistant_alert_once(channel, lab, cfg)
+        except Exception as exc:  # pragma: no cover
+            logger.error("SDL assistant monitor alert failed: %s", exc)
+
+
+def register_assistant_monitor(
+    app: "FastAPI",
+    client: Optional["LabClient"] = None,
+    *,
+    slack_channel: Optional[str] = None,
+) -> None:
+    """Mount ``POST /alerts/assistant`` and (if enabled) the probe loop.
+
+    The background monitor is started on the app's ``startup`` (where a running
+    event loop exists) and cancelled on ``shutdown`` — the route is registered
+    here so callers keep the same simple API, but the loop only spins once the
+    server is actually serving. Returns nothing.
+
+    The route is idempotent: a manual POST when the assistant is healthy posts
+    nothing and acts as a liveness check. Monitoring is a no-op unless
+    ``assistant.monitor_enabled`` is true (config/env).
+    """
+    if not _FASTAPI_AVAILABLE:
+        return
+    from .config import load_config
+    cfg = load_config()
+    channel = slack_channel or cfg.slack.alert_channel
+    lab = client or LabClient()
+
+    @app.post("/alerts/assistant", status_code=202)
+    async def assistant_alert() -> dict:
+        # On-demand self-heal (e.g. an external scheduler or a manual poke).
+        await _assistant_alert_once(channel, lab, cfg)
+        return {"action": "assistant_selfheal"}
+
+    if not cfg.assistant.monitor_enabled:
+        return
+
+    _state: dict[str, Optional["asyncio.Task"]] = {"task": None}
+
+    @app.on_event("startup")
+    async def _start_monitor() -> None:
+        semaphore = asyncio.Semaphore(1)
+        _state["task"] = asyncio.create_task(
+            _assistant_monitor_loop(channel, lab, cfg, semaphore)
+        )
+
+    @app.on_event("shutdown")
+    async def _stop_monitor() -> None:
+        task = _state.get("task")
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            _state["task"] = None
+
+

@@ -500,3 +500,208 @@ def test_run_claude_times_out_and_kills(monkeypatch, tmp_path):
 
     assert "timeout" in out.lower()
     assert killed["value"] is True
+
+
+# ---------------------------------------------------------------------------
+# SDL Assistant self-healing monitor
+# ---------------------------------------------------------------------------
+
+
+def test_assistant_health_ok_parses_configured(monkeypatch):
+    """configured:true + a model ⇒ healthy; non-200 / configured:false ⇒ down."""
+    from pypoe.lab.http_client import LabClient
+
+    async def testcases():
+        cases = [
+            (200, {"configured": True, "model": "m"}, True),
+            (200, {"configured": False, "backend": "openai"}, False),
+            (500, {}, False),
+            (200, "not json", False),
+        ]
+        results = []
+        for status, payload, expected in cases:
+            transport = httpx.MockTransport(lambda r, _p=payload, _s=status: httpx.Response(_s, json=_p))
+            lab = LabClient(
+                base_url="http://t",
+                client=httpx.AsyncClient(base_url="http://t", transport=transport),
+            )
+            ok, _det = await alert_routes._assistant_health_ok(lab, "http://t/api/x")
+            results.append(ok == expected)
+            await lab.aclose()
+        return all(results)
+
+    assert asyncio.run(testcases())
+
+
+def test_assistant_health_transport_error_is_down(monkeypatch):
+    from pypoe.lab.http_client import LabClient
+
+    def boom(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    transport = httpx.MockTransport(boom)
+    lab = LabClient(
+        base_url="http://t",
+        client=httpx.AsyncClient(base_url="http://t", transport=transport),
+    )
+    ok, det = asyncio.run(alert_routes._assistant_health_ok(lab, "http://t/api/x"))
+    assert ok is False
+    assert "unreachable" in det
+    asyncio.run(lab.aclose())
+
+
+def test_assistant_key_present(monkeypatch, tmp_path):
+    """Key present ⇒ True; missing/quoted-empty ⇒ False (no value leak)."""
+    env = tmp_path / ".env"
+    env.write_text("ASSISTANT_OPENAI_API_KEY=sk-12345\nOTHER=X\n")
+    assert alert_routes._assistant_key_present(str(tmp_path)) == (True, "key present")
+
+    env.write_text("OTHER=X\n")
+    ok, det = alert_routes._assistant_key_present(str(tmp_path))
+    assert ok is False
+    assert "KEY" in det
+
+    env.write_text('ASSISTANT_OPENAI_API_KEY=""\n')
+    ok, _det = alert_routes._assistant_key_present(str(tmp_path))
+    assert ok is False
+
+
+def test_restart_service_kills_pid(monkeypatch):
+    """Relaunch prefers SIGKILL of the MainPID (the sudo-less bounce)."""
+    calls = {"kill": [], "restart": []}
+
+    def fake_mainpid(service):
+        return "12345"
+
+    def fake_kill(*args, **kwargs):
+        calls["kill"].append(args[0])
+        import subprocess
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    def fake_systemctl_restart(*args, **kwargs):
+        calls["restart"].append(args[0])
+        import subprocess
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(alert_routes, "_service_mainpid", fake_mainpid)
+    monkeypatch.setattr(alert_routes.subprocess, "run", fake_kill)
+    ok, det = alert_routes._restart_service("ac-organic-lab-api.service")
+    assert ok is True
+    assert calls["kill"] == [["kill", "-KILL", "12345"]]
+    assert calls["restart"] == []
+    assert "12345" in det
+
+
+def test_restart_service_falls_back_to_systemctl(monkeypatch):
+    calls = {"run": []}
+
+    def fake_mainpid(service):
+        return None  # no resolvable PID → fall back
+
+    def fake_run(*args, **kwargs):
+        calls["run"].append(args[0])
+        import subprocess
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(alert_routes, "_service_mainpid", fake_mainpid)
+    monkeypatch.setattr(alert_routes.subprocess, "run", fake_run)
+    ok, det = alert_routes._restart_service("svc")
+    assert ok is True
+    assert calls["run"][0] == ["systemctl", "restart", "svc"]
+
+
+def test_assistant_remediate_restarts_and_recovers(monkeypatch):
+    """Full remediate: down → service active → bounce → key next → healthy."""
+    from pypoe.lab.config import AssistantSection, LabConfig
+
+    cfg = LabConfig(
+        assistant=AssistantSection(
+            service_name="svc", env_root="/nowhere", restart_wait_s=0.0
+        )
+    )
+    rev = {"n": 0}
+
+    async def fake_health(lab, url):
+        rev["n"] += 1
+        # Baseline probe fails; the probe after the "restart" succeeds.
+        if rev["n"] >= 2:
+            return True, "ok"
+        return False, "down"
+
+    monkeypatch.setattr(alert_routes, "_assistant_health_ok", fake_health)
+    monkeypatch.setattr(alert_routes, "_service_active", lambda s: True)
+    monkeypatch.setattr(
+        alert_routes, "_restart_service", lambda s: (True, "bounced")
+    )
+    monkeypatch.setattr(
+        alert_routes, "_assistant_key_present", lambda e: (True, "key present")
+    )
+
+    async def run():
+        return await alert_routes._assistant_remediate(cfg, None)  # type: ignore[arg-type]
+
+    recovered, steps = asyncio.run(run())
+    assert recovered is True
+    labels = [s[0] for s in steps]
+    assert any("service svc active" in l for l in labels)
+    assert any("restart svc" in l for l in labels)
+
+
+def test_assistant_alert_route_down_posts_alert_and_report(monkeypatch):
+    """POST /alerts/assistant on a DOWN assistant alerts + posts the report."""
+    posted: list[dict] = []
+
+    async def fake_post(channel, text, thread_ts=None):
+        posted.append({"text": text, "thread_ts": thread_ts})
+        return f"ts-{len(posted)}"
+
+    async def fake_health(lab, url):
+        return False, "configured=false"
+
+    async def fake_remediate(cfg, lab):
+        return False, [
+            ("service svc active", True, "active"),
+            ("restart svc", False, "nope"),
+            ("ASSISTANT_OPENAI_API_KEY present", False, "missing"),
+        ]
+
+    monkeypatch.setattr(alert_routes, "_post_slack", fake_post)
+    monkeypatch.setattr(alert_routes, "_assistant_health_ok", fake_health)
+    monkeypatch.setattr(alert_routes, "_assistant_remediate", fake_remediate)
+
+    appx = FastAPI()
+    # monitor disabled keeps this deterministic (route only, no loop task)
+    alert_routes.register_assistant_monitor(appx, slack_channel="#test")
+
+    with TestClient(appx) as client:
+        resp = client.post("/alerts/assistant")
+    assert resp.status_code == 202
+    assert resp.json()["action"] == "assistant_selfheal"
+
+    assert len(posted) == 2
+    assert "SDL Assistant" in posted[0]["text"]
+    assert "trying fixes" in posted[0]["text"]
+    assert posted[1]["thread_ts"] == "ts-1"  # threaded
+    assert "STILL DOWN" in posted[1]["text"]
+    assert "ASSISTANT_OPENAI_API_KEY present" in posted[1]["text"]
+
+
+def test_assistant_alert_route_healthy_posts_nothing(monkeypatch):
+    """A healthy assistant POSTs nothing (pure liveness/self-heal no-op)."""
+    posted: list[dict] = []
+
+    async def fake_post(channel, text, thread_ts=None):
+        posted.append({"text": text})
+
+    async def fake_health(lab, url):
+        return True, "ok"
+
+    monkeypatch.setattr(alert_routes, "_post_slack", fake_post)
+    monkeypatch.setattr(alert_routes, "_assistant_health_ok", fake_health)
+
+    appx = FastAPI()
+    alert_routes.register_assistant_monitor(appx, slack_channel="#test")
+    with TestClient(appx) as client:
+        client.post("/alerts/assistant")
+    assert posted == []
+

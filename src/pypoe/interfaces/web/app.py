@@ -1405,7 +1405,10 @@ class WebApp:
         if not (os.environ.get("LAB_API_URL") or os.environ.get("PYPOE_ENABLE_LAB")):
             return
         try:
-            from ...lab.alert_routes import register_alert_routes
+            from ...lab.alert_routes import (
+                register_alert_routes,
+                register_assistant_monitor,
+            )
             from ...lab.http_client import LabClient
         except ImportError as exc:
             _stdlib_logger.warning("Lab alert routes not loaded: %s", exc)
@@ -1414,8 +1417,9 @@ class WebApp:
         try:
             self._lab_client = LabClient()
             register_alert_routes(self.app, client=self._lab_client)
+            register_assistant_monitor(self.app, client=self._lab_client)
             _stdlib_logger.info(
-                "Mounted POST /alerts/kuma against %s",
+                "Mounted POST /alerts/kuma and /alerts/assistant against %s",
                 self._lab_client.base_url,
             )
         except Exception as exc:
