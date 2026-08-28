@@ -100,6 +100,42 @@ class AssistantSection:
 
 
 @dataclass(frozen=True)
+class DashboardSection:
+    """Self-healing monitor for the SDL dashboard's non-liveness surfaces.
+
+    ``GET /api/health`` only proves the server is awake — it does NOT exercise
+    the routes that actually serve the UI (and that are the ones a stale or
+    half-broken deploy breaks): the OpenAPI document, the skill catalog, and
+    the equipment/status listings. Jiaru hit a real case: a single unresolved
+    return annotation in the voice router made ``GET /api/openapi.json`` return
+    500 while ``/api/health`` stayed green, so no monitor would have caught it.
+    This monitor probes each configured path and treats any non-``expected_status``
+    (or transport error / non-JSON body) as DOWN, then bounces the backing API
+    service (SIGKILL relaunch — the unit runs as ``sdl2`` with
+    ``Restart=on-failure``).
+
+    Env overrides:
+        LAB_DASHBOARD_MONITOR_ENABLED, LAB_DASHBOARD_BASE_URL,
+        LAB_DASHBOARD_PATHS, LAB_DASHBOARD_PROBE_INTERVAL_S,
+        LAB_DASHBOARD_SERVICE, LAB_DASHBOARD_RESTART_WAIT_S,
+        LAB_DASHBOARD_EXPECTED_STATUS, LAB_DASHBOARD_FAILURES_TO_ALERT.
+    """
+
+    monitor_enabled: bool = False
+    base_url: str = "http://127.0.0.1:8001"
+    paths: tuple[str, ...] = (
+        "/api/openapi.json",
+        "/api/catalog",
+        "/api/equipment",
+    )
+    probe_interval_s: float = 120.0
+    service_name: str = "ac-organic-lab-api.service"
+    restart_wait_s: float = 10.0
+    expected_status: int = 200
+    failures_to_alert: int = 1
+
+
+@dataclass(frozen=True)
 class ConsultSection:
     """Which Poe models the alert handler asks for a second opinion.
 
@@ -133,6 +169,7 @@ class LabConfig:
     mcp: McpSection = field(default_factory=McpSection)
     consult: ConsultSection = field(default_factory=ConsultSection)
     assistant: AssistantSection = field(default_factory=AssistantSection)
+    dashboard: DashboardSection = field(default_factory=DashboardSection)
 
     # Where the YAML actually came from (None if no file was found).
     source_path: Optional[Path] = None
@@ -363,6 +400,59 @@ def load_config() -> LabConfig:
         ),
     )
 
+    env_dash_monitor = _env_bool("LAB_DASHBOARD_MONITOR_ENABLED")
+    yaml_dash_monitor = _dig(lab_root, "dashboard", "monitor_enabled")
+    if env_dash_monitor is not None:
+        dash_monitor_enabled = env_dash_monitor
+    elif isinstance(yaml_dash_monitor, bool):
+        dash_monitor_enabled = yaml_dash_monitor
+    else:
+        dash_monitor_enabled = DashboardSection.__dataclass_fields__["monitor_enabled"].default
+
+    env_dash_paths = _env_list("LAB_DASHBOARD_PATHS")
+    yaml_dash_paths = _dig(lab_root, "dashboard", "paths")
+    if env_dash_paths is not None:
+        dash_paths: tuple[str, ...] = env_dash_paths
+    elif isinstance(yaml_dash_paths, list):
+        dash_paths = tuple(p for p in yaml_dash_paths if isinstance(p, str) and p.strip())
+    else:
+        dash_paths = DashboardSection.__dataclass_fields__["paths"].default
+
+    dashboard = DashboardSection(
+        monitor_enabled=dash_monitor_enabled,
+        base_url=(
+            os.environ.get("LAB_DASHBOARD_BASE_URL")
+            or _dig(lab_root, "dashboard", "base_url")
+            or DashboardSection.__dataclass_fields__["base_url"].default
+        ),
+        paths=dash_paths,
+        probe_interval_s=(
+            _env_float("LAB_DASHBOARD_PROBE_INTERVAL_S")
+            or _dig(lab_root, "dashboard", "probe_interval_s")
+            or DashboardSection.__dataclass_fields__["probe_interval_s"].default
+        ),
+        service_name=(
+            os.environ.get("LAB_DASHBOARD_SERVICE")
+            or _dig(lab_root, "dashboard", "service_name")
+            or DashboardSection.__dataclass_fields__["service_name"].default
+        ),
+        restart_wait_s=(
+            _env_float("LAB_DASHBOARD_RESTART_WAIT_S")
+            or _dig(lab_root, "dashboard", "restart_wait_s")
+            or DashboardSection.__dataclass_fields__["restart_wait_s"].default
+        ),
+        expected_status=(
+            _env_int("LAB_DASHBOARD_EXPECTED_STATUS")
+            or _dig(lab_root, "dashboard", "expected_status")
+            or DashboardSection.__dataclass_fields__["expected_status"].default
+        ),
+        failures_to_alert=(
+            _env_int("LAB_DASHBOARD_FAILURES_TO_ALERT")
+            or _dig(lab_root, "dashboard", "failures_to_alert")
+            or DashboardSection.__dataclass_fields__["failures_to_alert"].default
+        ),
+    )
+
     cfg = LabConfig(
         api_url=api_url,
         slack=slack,
@@ -370,6 +460,7 @@ def load_config() -> LabConfig:
         mcp=mcp,
         consult=consult,
         assistant=assistant,
+        dashboard=dashboard,
         source_path=src,
     )
     _LOADED["cfg"] = cfg

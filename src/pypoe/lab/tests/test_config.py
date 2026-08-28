@@ -183,3 +183,32 @@ def test_load_is_cached_until_reload(monkeypatch):
     # reload_config() re-reads.
     cfg4 = lab_config.reload_config()
     assert cfg4.slack.alert_channel == "#changed"
+
+
+def test_dashboard_defaults(monkeypatch):
+    cfg = lab_config.load_config()
+    assert cfg.dashboard.monitor_enabled is False
+    assert "/api/openapi.json" in cfg.dashboard.paths
+    assert cfg.dashboard.expected_status == 200
+
+
+def test_dashboard_yaml_and_env(monkeypatch, tmp_path):
+    path = tmp_path / "slack.yaml"
+    path.write_text(
+        "lab:\n"
+        "  dashboard:\n"
+        "    monitor_enabled: true\n"
+        "    base_url: http://127.0.0.1:9001\n"
+        "    paths:\n"
+        "      - /api/openapi.json\n"
+        "      - /api/catalog\n"
+    )
+    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(path))
+    cfg = lab_config.reload_config()
+    assert cfg.dashboard.monitor_enabled is True
+    assert cfg.dashboard.base_url == "http://127.0.0.1:9001"
+    assert cfg.dashboard.paths == ("/api/openapi.json", "/api/catalog")
+    # env beats yaml
+    monkeypatch.setenv("LAB_DASHBOARD_BASE_URL", "http://127.0.0.1:9101")
+    cfg2 = lab_config.reload_config()
+    assert cfg2.dashboard.base_url == "http://127.0.0.1:9101"

@@ -705,3 +705,138 @@ def test_assistant_alert_route_healthy_posts_nothing(monkeypatch):
         client.post("/alerts/assistant")
     assert posted == []
 
+
+# ---------------------------------------------------------------------------
+# SDL Dashboard surface monitor
+# ---------------------------------------------------------------------------
+
+
+class _FakeDashClient:
+    """Minimal async client stub: statuses keyed by path suffix."""
+
+    def __init__(self, statuses: dict[str, int]):
+        self._statuses = statuses
+
+    async def get(self, url: str):
+        class _Resp:
+            def __init__(self, code, body):
+                self.status_code = code
+                self._body = body
+
+            def json(self):
+                return self._body
+
+        code = self._statuses.get(url.split("8001", 1)[-1], 500)
+        return _Resp(code, {"ok": True})
+
+
+def _dash_cfg(**kw):
+    from pypoe.lab.config import DashboardSection, LabConfig
+
+    return LabConfig(dashboard=DashboardSection(**kw))
+
+
+def test_dashboard_ok_all_healthy(monkeypatch):
+    lab = LabClient()
+    lab._client = _FakeDashClient({"/api/openapi.json": 200, "/api/catalog": 200, "/api/equipment": 200})
+    cfg = _dash_cfg()
+    ok, det = asyncio.run(alert_routes._dashboard_ok(lab, cfg))
+    assert ok is True
+    assert "HTTP 200 ok" in det
+
+
+def test_dashboard_ok_one_500_is_down(monkeypatch):
+    lab = LabClient()
+    lab._client = _FakeDashClient({"/api/openapi.json": 500, "/api/catalog": 200, "/api/equipment": 200})
+    cfg = _dash_cfg()
+    ok, det = asyncio.run(alert_routes._dashboard_ok(lab, cfg))
+    assert ok is False
+    assert "openapi.json -> HTTP 500" in det
+
+
+def test_dashboard_url_joins_base_and_path():
+    assert alert_routes._dashboard_url("http://127.0.0.1:8001/", "api/health") == \
+        "http://127.0.0.1:8001/api/health"
+
+
+def test_dashboard_remediate_restarts_and_recovers(monkeypatch):
+    """Full remediate: down → service active → bounce restart → healthy."""
+    cfg = _dash_cfg(service_name="svc", restart_wait_s=0.0)
+    rev = {"n": 0}
+
+    async def fake_ok(lab, cfg):
+        rev["n"] += 1
+        if rev["n"] >= 2:
+            return True, "ok"
+        return False, "HTTP 500"
+
+    monkeypatch.setattr(alert_routes, "_dashboard_ok", fake_ok)
+    monkeypatch.setattr(alert_routes, "_service_active", lambda s: True)
+    monkeypatch.setattr(alert_routes, "_restart_service", lambda s: (True, "bounced"))
+
+    async def run():
+        return await alert_routes._dashboard_remediate(cfg, None)  # type: ignore[arg-type]
+
+    recovered, steps = asyncio.run(run())
+    assert recovered is True
+    labels = [s[0] for s in steps]
+    assert any("service svc active" in l for l in labels)
+    assert any("restart svc" in l for l in labels)
+
+
+def test_dashboard_alert_route_down_posts_alert_and_report(monkeypatch):
+    """POST /alerts/dashboard on a DOWN dashboard alerts + posts the report."""
+    posted: list[dict] = []
+
+    async def fake_post(channel, text, thread_ts=None):
+        posted.append({"text": text, "thread_ts": thread_ts})
+        return f"ts-{len(posted)}"
+
+    async def fake_ok(lab, cfg):
+        return False, "openapi.json -> HTTP 500"
+
+    async def fake_remediate(cfg, lab):
+        return False, [
+            ("service svc active", True, "active"),
+            ("restart svc", False, "nope"),
+        ]
+
+    monkeypatch.setattr(alert_routes, "_post_slack", fake_post)
+    monkeypatch.setattr(alert_routes, "_dashboard_ok", fake_ok)
+    monkeypatch.setattr(alert_routes, "_dashboard_remediate", fake_remediate)
+
+    appx = FastAPI()
+    # monitor disabled keeps this deterministic (route only, no loop task)
+    alert_routes.register_dashboard_monitor(appx, slack_channel="#test")
+
+    with TestClient(appx) as client:
+        resp = client.post("/alerts/dashboard")
+    assert resp.status_code == 202
+    assert resp.json()["action"] == "dashboard_selfheal"
+
+    assert len(posted) == 2
+    assert "SDL Dashboard" in posted[0]["text"]
+    assert "trying fixes" in posted[0]["text"]
+    assert posted[1]["thread_ts"] == "ts-1"
+    assert "STILL DOWN" in posted[1]["text"]
+
+
+def test_dashboard_alert_route_healthy_posts_nothing(monkeypatch):
+    """A healthy dashboard POSTs nothing (pure liveness/self-heal no-op)."""
+    posted: list[dict] = []
+
+    async def fake_post(channel, text, thread_ts=None):
+        posted.append({"text": text})
+
+    async def fake_ok(lab, cfg):
+        return True, "all ok"
+
+    monkeypatch.setattr(alert_routes, "_post_slack", fake_post)
+    monkeypatch.setattr(alert_routes, "_dashboard_ok", fake_ok)
+
+    appx = FastAPI()
+    alert_routes.register_dashboard_monitor(appx, slack_channel="#test")
+    with TestClient(appx) as client:
+        client.post("/alerts/dashboard")
+    assert posted == []
+

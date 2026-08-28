@@ -982,3 +982,227 @@ def register_assistant_monitor(
             _state["task"] = None
 
 
+# ---------------------------------------------------------------------------
+# SDL Dashboard surface monitor
+# ---------------------------------------------------------------------------
+# Watches the dashboard's *data* routes (/api/openapi.json, /api/catalog,
+# /api/equipment) rather than /api/health. Health only proves the server is
+# awake; a stale or half-broken deploy can keep health green while the real
+# UI-serving routes throw 500s (Jiaru's case: /api/openapi.json 500 with
+# /api/health healthy). On a DOWN transition it posts a Slack alert, bounces
+# the backing API service, re-probes, and reports what succeeded vs failed.
+
+
+async def _dashboard_ok(
+    lab: "LabClient", cfg
+) -> tuple[bool, str]:
+    """Probe every dashboard path; return (healthy, human detail).
+
+    DOWN = any transport error, non-``expected_status``, or non-dict JSON body.
+    """
+    dash = cfg.dashboard
+    results: list[str] = []
+    for path in dash.paths:
+        url = _dashboard_url(dash.base_url, path)
+        try:
+            resp = await lab._client.get(url)
+        except Exception as exc:  # httpx errors
+            results.append(f"{path} -> unreachable ({type(exc).__name__})")
+            continue
+        if resp.status_code != dash.expected_status:
+            results.append(f"{path} -> HTTP {resp.status_code}")
+            continue
+        try:
+            data = resp.json()
+        except Exception:
+            results.append(f"{path} -> non-JSON response")
+            continue
+        if dash.expected_status == 200 and not isinstance(data, dict):
+            results.append(f"{path} -> unexpected payload shape")
+            continue
+        results.append(f"{path} -> HTTP {dash.expected_status} ok")
+    ok = all("ok" in r for r in results)
+    return ok, "; ".join(results)
+
+
+def _dashboard_url(base: str, path: str) -> str:
+    """Join a base URL and an absolute path, tolerating a trailing slash."""
+    base = base.rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
+
+
+async def _dashboard_remediate(
+    cfg, lab: "LabClient"
+) -> tuple[bool, list[tuple[str, bool, str]]]:
+    """Attempt a bounded set of common fixes; return (healthy_now, steps).
+
+    Steps:
+      1. Re-probe (baseline) — a transient 500 may clear itself.
+      2. If the backing service is inactive, try to start it.
+      3. Bounce the service (a wedged-but-running process needs a restart).
+    Re-probe after each step.
+    """
+    dash = cfg.dashboard
+    steps: list[tuple[str, bool, str]] = []
+
+    ok, det = await _dashboard_ok(lab, cfg)
+    if ok:
+        return True, [("baseline re-probe", True, det)]
+
+    if not _service_active(dash.service_name):
+        st_ok, st_det = _restart_service(dash.service_name)
+        steps.append((f"start {dash.service_name}", st_ok, st_det))
+        await asyncio.sleep(dash.restart_wait_s)
+        ok, det = await _dashboard_ok(lab, cfg)
+        if ok:
+            return True, steps
+    else:
+        steps.append((f"service {dash.service_name} active", True, "active"))
+
+    b_ok, b_det = _restart_service(dash.service_name)
+    steps.append((f"restart {dash.service_name}", b_ok, b_det))
+    await asyncio.sleep(dash.restart_wait_s)
+    ok, det = await _dashboard_ok(lab, cfg)
+    if ok:
+        return True, steps
+
+    return False, steps + [("final re-probe", False, det)]
+
+
+async def _dashboard_report(
+    channel: str, thread_ts: Optional[str], recovered: bool, steps
+) -> None:
+    lines = []
+    for label, ok, det in steps:
+        mark = ":white_check_mark:" if ok else ":x:"
+        lines.append(f"{mark} {label} — {det}")
+    head = (
+        f"*SDL Dashboard* :green_circle: recovered after self-heal:"
+        if recovered
+        else f"*SDL Dashboard* :red_circle: STILL DOWN after self-heal:"
+    )
+    text = "\n".join([head, *lines])
+    try:
+        await _post_slack(channel, text, thread_ts=thread_ts)
+    except Exception as exc:  # pragma: no cover
+        logger.error("Failed to post SDL dashboard remediation report: %s", exc)
+
+
+async def _dashboard_alert_once(
+    channel: str, lab: "LabClient", cfg
+) -> Optional[str]:
+    """Full down-handling for the dashboard: alert -> remediate -> report."""
+    ok, det = await _dashboard_ok(lab, cfg)
+    if ok:
+        return None
+    try:
+        thread_ts = await _post_slack(
+            channel,
+            f":rotating_light: *SDL Dashboard* DOWN — {det} :mag: trying fixes…",
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.error("Failed to post SDL dashboard alert: %s", exc)
+        thread_ts = None
+
+    recovered, steps = await _dashboard_remediate(cfg, lab)
+    await _dashboard_report(channel, thread_ts, recovered, steps)
+    return thread_ts
+
+
+async def _dashboard_recover(channel: str) -> None:
+    try:
+        await _post_slack(channel, ":white_check_mark: *SDL Dashboard* recovered.")
+    except Exception as exc:  # pragma: no cover
+        logger.error("Failed to post SDL dashboard recovery: %s", exc)
+
+
+async def _dashboard_monitor_loop(
+    channel: str, lab: "LabClient", cfg, semaphore: "asyncio.Semaphore"
+) -> None:
+    """Periodic probe loop. Alerts on a DOWN transition, recovers on UP."""
+    dash = cfg.dashboard
+    was_down = False
+    consecutive_failures = 0
+    while True:
+        await asyncio.sleep(dash.probe_interval_s)
+        ok, _det = await _dashboard_ok(lab, cfg)
+        if ok:
+            consecutive_failures = 0
+            if was_down:
+                was_down = False
+                await _dashboard_recover(channel)
+            continue
+        consecutive_failures += 1
+        if consecutive_failures < dash.failures_to_alert:
+            continue
+        if was_down:
+            try:
+                async with semaphore:
+                    recovered, steps = await _dashboard_remediate(cfg, lab)
+                    if recovered:
+                        was_down = False
+                        await _dashboard_recover(channel)
+                    else:
+                        await _dashboard_report(channel, None, False, steps)
+            except Exception as exc:  # pragma: no cover
+                logger.error("SDL dashboard monitor remediation failed: %s", exc)
+            continue
+        was_down = True
+        try:
+            async with semaphore:
+                await _dashboard_alert_once(channel, lab, cfg)
+        except Exception as exc:  # pragma: no cover
+            logger.error("SDL dashboard monitor alert failed: %s", exc)
+
+
+def register_dashboard_monitor(
+    app: "FastAPI",
+    client: Optional["LabClient"] = None,
+    *,
+    slack_channel: Optional[str] = None,
+) -> None:
+    """Mount ``POST /alerts/dashboard`` and (if enabled) the probe loop.
+
+    Mirrors ``register_assistant_monitor``: the route is always mounted (so a
+    manual POST acts as a liveness/self-heal poke), but the background loop only
+    spins when ``dashboard.monitor_enabled`` is true (config/env), and only on
+    the app's ``startup`` where a running event loop exists.
+    """
+    if not _FASTAPI_AVAILABLE:
+        return
+    from .config import load_config
+    cfg = load_config()
+    channel = slack_channel or cfg.slack.alert_channel
+    lab = client or LabClient()
+
+    @app.post("/alerts/dashboard", status_code=202)
+    async def dashboard_alert() -> dict:
+        await _dashboard_alert_once(channel, lab, cfg)
+        return {"action": "dashboard_selfheal"}
+
+    if not cfg.dashboard.monitor_enabled:
+        return
+
+    _state: dict[str, Optional["asyncio.Task"]] = {"task": None}
+
+    @app.on_event("startup")
+    async def _start_dashboard_monitor() -> None:
+        semaphore = asyncio.Semaphore(1)
+        _state["task"] = asyncio.create_task(
+            _dashboard_monitor_loop(channel, lab, cfg, semaphore)
+        )
+
+    @app.on_event("shutdown")
+    async def _stop_dashboard_monitor() -> None:
+        task = _state.get("task")
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            _state["task"] = None
+
+

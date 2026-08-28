@@ -104,3 +104,45 @@ lab:
     # Consecutive failing probes before an alert fires (damp flapping).
     failures_to_alert: 1
 
+  dashboard:
+    # Self-healing monitor for the SDL dashboard's *data* routes. /api/health
+    # only proves the server is awake — a stale or half-broken deploy (e.g. an
+    # unresolved return annotation that 500s /api/openapi.json while health
+    # stays green) can break the UI-bearing routes that health never touches.
+    # When enabled, a background task probes `paths` under `base_url` every
+    # `probe_interval_s` seconds and treats any non-`expected_status` (or a
+    # transport error / non-JSON body) as DOWN. On a DOWN transition it posts a
+    # Slack alert, bounces the backing API service, re-probes, and posts a
+    # threaded report of what succeeded vs failed; recovery posts a
+    # :white_check_mark: line. You can trigger a self-heal on demand by POSTing
+    # to /alerts/dashboard.
+    #
+    # The backing service is relaunched WITHOUT sudo: it runs as this user with
+    # Restart=on-failure, so a SIGKILL of its MainPID is enough to bounce it.
+    monitor_enabled: false
+
+    # Direct API base URL (bypassing the Next proxy, so a web fault is not
+    # mistaken for an API fault — matching the assistant monitor).
+    base_url: http://127.0.0.1:8001
+
+    # Data routes to probe. All must return expected_status to be healthy.
+    paths:
+      - /api/openapi.json
+      - /api/catalog
+      - /api/equipment
+
+    # How often (seconds) to probe.
+    probe_interval_s: 120
+
+    # systemd unit to start/bounce when any probed route is unhealthy.
+    service_name: ac-organic-lab-api.service
+
+    # Seconds to wait after a restart before re-probing.
+    restart_wait_s: 10
+
+    # Status code every probed route must return to be considered healthy.
+    expected_status: 200
+
+    # Consecutive failing probes before an alert fires (damp flapping).
+    failures_to_alert: 1
+

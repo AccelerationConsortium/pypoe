@@ -1408,6 +1408,7 @@ class WebApp:
             from ...lab.alert_routes import (
                 register_alert_routes,
                 register_assistant_monitor,
+                register_dashboard_monitor,
             )
             from ...lab.http_client import LabClient
         except ImportError as exc:
@@ -1418,8 +1419,10 @@ class WebApp:
             self._lab_client = LabClient()
             register_alert_routes(self.app, client=self._lab_client)
             register_assistant_monitor(self.app, client=self._lab_client)
+            register_dashboard_monitor(self.app, client=self._lab_client)
             _stdlib_logger.info(
-                "Mounted POST /alerts/kuma and /alerts/assistant against %s",
+                "Mounted POST /alerts/kuma, /alerts/assistant and "
+                "/alerts/dashboard against %s",
                 self._lab_client.base_url,
             )
         except Exception as exc:
