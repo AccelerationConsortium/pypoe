@@ -616,7 +616,8 @@ def test_assistant_remediate_restarts_and_recovers(monkeypatch):
 
     cfg = LabConfig(
         assistant=AssistantSection(
-            service_name="svc", env_root="/nowhere", restart_wait_s=0.0
+            service_name="svc", env_root="/nowhere", restart_wait_s=0.0,
+            confirm_wait_s=0.0,  # gate off: this test exercises the restart path
         )
     )
     rev = {"n": 0}
@@ -761,7 +762,8 @@ def test_dashboard_url_joins_base_and_path():
 
 def test_dashboard_remediate_restarts_and_recovers(monkeypatch):
     """Full remediate: down → service active → bounce restart → healthy."""
-    cfg = _dash_cfg(service_name="svc", restart_wait_s=0.0)
+    # confirm gate off: this test exercises the restart path
+    cfg = _dash_cfg(service_name="svc", restart_wait_s=0.0, confirm_wait_s=0.0)
     rev = {"n": 0}
 
     async def fake_ok(lab, cfg):
@@ -840,3 +842,162 @@ def test_dashboard_alert_route_healthy_posts_nothing(monkeypatch):
         client.post("/alerts/dashboard")
     assert posted == []
 
+
+
+# ---------------------------------------------------------------------------
+# Monitor-loop latch pairing + the SIGKILL confirm gate (2026-08-30)
+# ---------------------------------------------------------------------------
+# gaia's memory thrash froze every process ~25 s at a time; single lost probes
+# then produced ':white_check_mark: recovered.' lines with no outage ever
+# posted, and longer stalls got the perfectly-healthy API SIGKILLed. These
+# tests pin the two fixes: `was_down` means "a DOWN alert stands unanswered",
+# and the remediation bounce is gated behind a confirm re-probe.
+
+
+class _StopLoop(Exception):
+    """Raised by the probe fake to break out of the infinite monitor loop."""
+
+
+def _assistant_cfg(**kw):
+    from pypoe.lab.config import AssistantSection, LabConfig
+
+    return LabConfig(assistant=AssistantSection(**kw))
+
+
+def _run_assistant_loop(monkeypatch, cfg, probes, handle_recovered):
+    """Drive `_assistant_monitor_loop` over a finite probe sequence.
+
+    Returns the ordered (kind, detail) events posted. `probe_interval_s=0`
+    makes the loop's real `asyncio.sleep(0)` a plain yield, so no sleeping.
+    """
+    events: list[tuple[str, str | None]] = []
+    seq = iter(probes)
+
+    async def fake_probe(lab, url):
+        try:
+            return next(seq)
+        except StopIteration:
+            raise _StopLoop()
+
+    async def fake_handle(channel, lab, c, det):
+        events.append(("down", det))
+        return handle_recovered
+
+    async def fake_recover(channel):
+        events.append(("recovered", None))
+
+    monkeypatch.setattr(alert_routes, "_assistant_health_ok", fake_probe)
+    monkeypatch.setattr(alert_routes, "_assistant_handle_down", fake_handle)
+    monkeypatch.setattr(alert_routes, "_assistant_recover", fake_recover)
+
+    async def run():
+        await alert_routes._assistant_monitor_loop(
+            "#test", None, cfg, asyncio.Semaphore(1)
+        )
+
+    with pytest.raises(_StopLoop):
+        asyncio.run(run())
+    return events
+
+
+def test_monitor_transient_down_posts_no_orphan_recovery(monkeypatch):
+    """A DOWN the remediation immediately resolved must clear the latch: the
+    old code left it armed and posted an orphan 'recovered.' next tick."""
+    cfg = _assistant_cfg(probe_interval_s=0.0, failures_to_alert=1)
+    events = _run_assistant_loop(
+        monkeypatch,
+        cfg,
+        probes=[(False, "timeout"), (True, "ok")],
+        handle_recovered=True,  # remediation report ended on the green line
+    )
+    assert events == [("down", "timeout")]
+
+
+def test_monitor_unresolved_down_still_pairs_with_recovery(monkeypatch):
+    """When remediation could NOT recover it, the latch stays armed and the
+    eventual healthy probe posts exactly one recovery line."""
+    cfg = _assistant_cfg(probe_interval_s=0.0, failures_to_alert=1)
+    events = _run_assistant_loop(
+        monkeypatch,
+        cfg,
+        probes=[(False, "HTTP 500"), (True, "ok")],
+        handle_recovered=False,
+    )
+    assert events == [("down", "HTTP 500"), ("recovered", None)]
+
+
+def test_monitor_single_failure_below_threshold_posts_nothing(monkeypatch):
+    """failures_to_alert damps one lost probe (a machine stall) entirely."""
+    cfg = _assistant_cfg(probe_interval_s=0.0, failures_to_alert=3)
+    events = _run_assistant_loop(
+        monkeypatch,
+        cfg,
+        probes=[(False, "timeout"), (True, "ok"), (False, "timeout"), (True, "ok")],
+        handle_recovered=True,
+    )
+    assert events == []
+
+
+def test_assistant_remediate_confirm_reprobe_averts_restart(monkeypatch):
+    """The confirm re-probe gates the SIGKILL: a failure that clears within
+    the confirm window returns recovered with NO restart issued."""
+    from pypoe.lab.config import AssistantSection, LabConfig
+
+    cfg = LabConfig(
+        assistant=AssistantSection(
+            service_name="svc", env_root="/nowhere",
+            restart_wait_s=0.0, confirm_wait_s=0.01,
+        )
+    )
+    rev = {"n": 0}
+    restarts: list[str] = []
+
+    async def fake_health(lab, url):
+        rev["n"] += 1
+        # Baseline probe fails (the stall); the confirm re-probe succeeds.
+        if rev["n"] >= 2:
+            return True, "ok"
+        return False, "timeout"
+
+    monkeypatch.setattr(alert_routes, "_assistant_health_ok", fake_health)
+    monkeypatch.setattr(alert_routes, "_service_active", lambda s: True)
+    monkeypatch.setattr(
+        alert_routes, "_restart_service",
+        lambda s: restarts.append(s) or (True, "bounced"),
+    )
+
+    async def run():
+        return await alert_routes._assistant_remediate(cfg, None)  # type: ignore[arg-type]
+
+    recovered, steps = asyncio.run(run())
+    assert recovered is True
+    assert restarts == []
+    assert any("confirm re-probe" in s[0] and s[1] for s in steps)
+
+
+def test_dashboard_remediate_confirm_reprobe_averts_restart(monkeypatch):
+    """Dashboard twin of the confirm gate."""
+    cfg = _dash_cfg(service_name="svc", restart_wait_s=0.0, confirm_wait_s=0.01)
+    rev = {"n": 0}
+    restarts: list[str] = []
+
+    async def fake_ok(lab, cfg):
+        rev["n"] += 1
+        if rev["n"] >= 2:
+            return True, "ok"
+        return False, "HTTP 500"
+
+    monkeypatch.setattr(alert_routes, "_dashboard_ok", fake_ok)
+    monkeypatch.setattr(alert_routes, "_service_active", lambda s: True)
+    monkeypatch.setattr(
+        alert_routes, "_restart_service",
+        lambda s: restarts.append(s) or (True, "bounced"),
+    )
+
+    async def run():
+        return await alert_routes._dashboard_remediate(cfg, None)  # type: ignore[arg-type]
+
+    recovered, steps = asyncio.run(run())
+    assert recovered is True
+    assert restarts == []
+    assert any("confirm re-probe" in s[0] and s[1] for s in steps)

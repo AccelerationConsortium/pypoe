@@ -86,7 +86,8 @@ class AssistantSection:
     Env overrides:
         LAB_ASSISTANT_MONITOR_ENABLED, LAB_ASSISTANT_HEALTH_URL,
         LAB_ASSISTANT_PROBE_INTERVAL_S, LAB_ASSISTANT_SERVICE,
-        LAB_ASSISTANT_ENV_ROOT, LAB_ASSISTANT_RESTART_WAIT_S.
+        LAB_ASSISTANT_ENV_ROOT, LAB_ASSISTANT_RESTART_WAIT_S,
+        LAB_ASSISTANT_FAILURES_TO_ALERT, LAB_ASSISTANT_CONFIRM_WAIT_S.
     """
 
     monitor_enabled: bool = False
@@ -95,8 +96,15 @@ class AssistantSection:
     service_name: str = "ac-organic-lab-api.service"
     env_root: str = "/home/sdl2/caoyang/ac-organic-lab"
     restart_wait_s: float = 10.0
-    #: consecutive failing probes before an alert fires (damp flapping)
-    failures_to_alert: int = 1
+    #: consecutive failing probes before an alert fires (damp flapping).
+    #: 3, not 1: a single probe lost to a machine-wide memory/IO stall (the
+    #: 2026-08-30 gaia thrash — ~25 s freezes of every process) must not arm
+    #: the monitor, let alone reach for the SIGKILL bounce.
+    failures_to_alert: int = 3
+    #: seconds to wait before the confirm re-probe that gates the SIGKILL
+    #: bounce in remediation — long enough to ride out a machine-wide reclaim
+    #: stall, which is not the service's fault. 0 disables the gate.
+    confirm_wait_s: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -118,7 +126,8 @@ class DashboardSection:
         LAB_DASHBOARD_MONITOR_ENABLED, LAB_DASHBOARD_BASE_URL,
         LAB_DASHBOARD_PATHS, LAB_DASHBOARD_PROBE_INTERVAL_S,
         LAB_DASHBOARD_SERVICE, LAB_DASHBOARD_RESTART_WAIT_S,
-        LAB_DASHBOARD_EXPECTED_STATUS, LAB_DASHBOARD_FAILURES_TO_ALERT.
+        LAB_DASHBOARD_EXPECTED_STATUS, LAB_DASHBOARD_FAILURES_TO_ALERT,
+        LAB_DASHBOARD_CONFIRM_WAIT_S.
     """
 
     monitor_enabled: bool = False
@@ -132,7 +141,11 @@ class DashboardSection:
     service_name: str = "ac-organic-lab-api.service"
     restart_wait_s: float = 10.0
     expected_status: int = 200
-    failures_to_alert: int = 1
+    #: 2, not 1 — same machine-stall reasoning as AssistantSection (its
+    #: probes are 120 s apart, so 2 already means ~4 min of failures).
+    failures_to_alert: int = 2
+    #: SIGKILL gate before the remediation bounce; see AssistantSection.
+    confirm_wait_s: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -398,6 +411,11 @@ def load_config() -> LabConfig:
             or _dig(lab_root, "assistant", "failures_to_alert")
             or AssistantSection.__dataclass_fields__["failures_to_alert"].default
         ),
+        confirm_wait_s=(
+            _env_float("LAB_ASSISTANT_CONFIRM_WAIT_S")
+            or _dig(lab_root, "assistant", "confirm_wait_s")
+            or AssistantSection.__dataclass_fields__["confirm_wait_s"].default
+        ),
     )
 
     env_dash_monitor = _env_bool("LAB_DASHBOARD_MONITOR_ENABLED")
@@ -450,6 +468,11 @@ def load_config() -> LabConfig:
             _env_int("LAB_DASHBOARD_FAILURES_TO_ALERT")
             or _dig(lab_root, "dashboard", "failures_to_alert")
             or DashboardSection.__dataclass_fields__["failures_to_alert"].default
+        ),
+        confirm_wait_s=(
+            _env_float("LAB_DASHBOARD_CONFIRM_WAIT_S")
+            or _dig(lab_root, "dashboard", "confirm_wait_s")
+            or DashboardSection.__dataclass_fields__["confirm_wait_s"].default
         ),
     )
 

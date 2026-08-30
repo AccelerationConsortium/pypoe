@@ -818,7 +818,20 @@ async def _assistant_remediate(
     else:
         steps.append((f"service {asst.service_name} active", True, "active"))
 
-    # 2. Bounce the service (wedged process still answers on the port).
+    # 2. Bounce the service (wedged process still answers on the port) — but
+    #    only after confirming the failure is the service's own. Under a
+    #    machine-wide stall (memory/IO reclaim freezing every process on the
+    #    host, as on 2026-08-30) every probe times out while the service is
+    #    perfectly healthy, and a SIGKILL here *causes* the outage it thinks
+    #    it is fixing. Wait out the confirm window and re-probe first.
+    if asst.confirm_wait_s > 0:
+        await asyncio.sleep(asst.confirm_wait_s)
+        ok, det = await _assistant_health_ok(lab, asst.health_url)
+        if ok:
+            return True, steps + [
+                ("confirm re-probe", True, f"cleared on its own — no restart: {det}")
+            ]
+        steps.append(("confirm re-probe", False, det))
     b_ok, b_det = _restart_service(asst.service_name)
     steps.append((f"restart {asst.service_name}", b_ok, b_det))
     await asyncio.sleep(asst.restart_wait_s)
@@ -852,20 +865,16 @@ async def _report_remediation(
         logger.error("Failed to post SDL assistant remediation report: %s", exc)
 
 
-async def _assistant_alert_once(
-    channel: str, lab: "LabClient", cfg
-) -> Optional[str]:
-    """Full down-handling for the assistant: alert -> remediate -> report.
+async def _assistant_handle_down(
+    channel: str, lab: "LabClient", cfg, det: str
+) -> bool:
+    """Post the DOWN alert for an observed failure, remediate, report.
 
-    Returns the thread_ts of the threaded remediation report (for tests / chained
-    recovery, or None if nothing was posted).
+    Returns True when remediation left the assistant healthy again (the
+    threaded report then already ends on the :green_circle: line). The caller
+    supplies ``det`` from the probe that actually failed, so the alert always
+    describes the observed failure rather than a fresh re-probe.
     """
-    asst = cfg.assistant
-    ok, det = await _assistant_health_ok(lab, asst.health_url)
-    if ok:
-        # Not down (could be a manual probe or a probe that recovered between
-        # the alert and this call) — nothing to remediate.
-        return None
     try:
         thread_ts = await _post_slack(
             channel,
@@ -877,7 +886,22 @@ async def _assistant_alert_once(
 
     recovered, steps = await _assistant_remediate(cfg, lab)
     await _report_remediation(channel, thread_ts, recovered, steps)
-    return thread_ts
+    return recovered
+
+
+async def _assistant_alert_once(
+    channel: str, lab: "LabClient", cfg
+) -> Optional[bool]:
+    """On-demand down-handling: probe, and on failure alert -> remediate.
+
+    Returns None when the assistant was healthy (nothing posted — the manual
+    POST doubles as a liveness check), else whether remediation recovered it.
+    """
+    asst = cfg.assistant
+    ok, det = await _assistant_health_ok(lab, asst.health_url)
+    if ok:
+        return None
+    return await _assistant_handle_down(channel, lab, cfg, det)
 
 
 async def _assistant_recover(channel: str) -> None:
@@ -890,13 +914,22 @@ async def _assistant_recover(channel: str) -> None:
 async def _assistant_monitor_loop(
     channel: str, lab: "LabClient", cfg, semaphore: "asyncio.Semaphore"
 ) -> None:
-    """Periodic probe loop. Alerts on a DOWN transition, recovers on UP."""
+    """Periodic probe loop. Alerts on a DOWN transition, recovers on UP.
+
+    ``was_down`` means exactly "a DOWN alert stands unanswered in the
+    channel". It used to be latched *before* the (re-probing) alert call, so
+    a transient failure that cleared in between posted no outage line yet
+    still posted ':white_check_mark: recovered.' on the next healthy tick —
+    the orphan-recovery Slack noise of 2026-08-30. The transition branch now
+    alerts on the failing probe it already observed and arms the latch only
+    while the outage is actually unresolved.
+    """
     asst = cfg.assistant
     was_down = False
     consecutive_failures = 0
     while True:
         await asyncio.sleep(asst.probe_interval_s)
-        ok, _det = await _assistant_health_ok(lab, asst.health_url)
+        ok, det = await _assistant_health_ok(lab, asst.health_url)
         if ok:
             consecutive_failures = 0
             if was_down:
@@ -920,12 +953,18 @@ async def _assistant_monitor_loop(
             except Exception as exc:  # pragma: no cover
                 logger.error("SDL assistant monitor remediation failed: %s", exc)
             continue
-        was_down = True
+        recovered = False
         try:
             async with semaphore:
-                await _assistant_alert_once(channel, lab, cfg)
+                recovered = await _assistant_handle_down(channel, lab, cfg, det)
         except Exception as exc:  # pragma: no cover
             logger.error("SDL assistant monitor alert failed: %s", exc)
+        # When remediation already recovered it, the threaded report ended on
+        # the :green_circle: line — leaving the latch armed would add a
+        # second, orphan recovery on the next tick.
+        was_down = not recovered
+        if recovered:
+            consecutive_failures = 0
 
 
 def register_assistant_monitor(
@@ -1061,6 +1100,17 @@ async def _dashboard_remediate(
     else:
         steps.append((f"service {dash.service_name} active", True, "active"))
 
+    # Same SIGKILL gate as the assistant remediation: a machine-wide stall
+    # fails these probes with the service perfectly healthy, and the bounce
+    # would then cause the outage. Confirm before the kill.
+    if dash.confirm_wait_s > 0:
+        await asyncio.sleep(dash.confirm_wait_s)
+        ok, det = await _dashboard_ok(lab, cfg)
+        if ok:
+            return True, steps + [
+                ("confirm re-probe", True, f"cleared on its own — no restart: {det}")
+            ]
+        steps.append(("confirm re-probe", False, det))
     b_ok, b_det = _restart_service(dash.service_name)
     steps.append((f"restart {dash.service_name}", b_ok, b_det))
     await asyncio.sleep(dash.restart_wait_s)
@@ -1090,13 +1140,14 @@ async def _dashboard_report(
         logger.error("Failed to post SDL dashboard remediation report: %s", exc)
 
 
-async def _dashboard_alert_once(
-    channel: str, lab: "LabClient", cfg
-) -> Optional[str]:
-    """Full down-handling for the dashboard: alert -> remediate -> report."""
-    ok, det = await _dashboard_ok(lab, cfg)
-    if ok:
-        return None
+async def _dashboard_handle_down(
+    channel: str, lab: "LabClient", cfg, det: str
+) -> bool:
+    """Post the DOWN alert for an observed failure, remediate, report.
+
+    Mirrors ``_assistant_handle_down``: ``det`` comes from the probe that
+    actually failed; returns True when remediation recovered the surface.
+    """
     try:
         thread_ts = await _post_slack(
             channel,
@@ -1108,7 +1159,21 @@ async def _dashboard_alert_once(
 
     recovered, steps = await _dashboard_remediate(cfg, lab)
     await _dashboard_report(channel, thread_ts, recovered, steps)
-    return thread_ts
+    return recovered
+
+
+async def _dashboard_alert_once(
+    channel: str, lab: "LabClient", cfg
+) -> Optional[bool]:
+    """On-demand down-handling: probe, and on failure alert -> remediate.
+
+    Returns None when the dashboard was healthy (nothing posted), else
+    whether remediation recovered it.
+    """
+    ok, det = await _dashboard_ok(lab, cfg)
+    if ok:
+        return None
+    return await _dashboard_handle_down(channel, lab, cfg, det)
 
 
 async def _dashboard_recover(channel: str) -> None:
@@ -1121,13 +1186,19 @@ async def _dashboard_recover(channel: str) -> None:
 async def _dashboard_monitor_loop(
     channel: str, lab: "LabClient", cfg, semaphore: "asyncio.Semaphore"
 ) -> None:
-    """Periodic probe loop. Alerts on a DOWN transition, recovers on UP."""
+    """Periodic probe loop. Alerts on a DOWN transition, recovers on UP.
+
+    Same latch discipline as ``_assistant_monitor_loop``: ``was_down`` means
+    "a DOWN alert stands unanswered", so a transient failure the remediation
+    (or its baseline re-probe) already resolved never produces an orphan
+    recovery line.
+    """
     dash = cfg.dashboard
     was_down = False
     consecutive_failures = 0
     while True:
         await asyncio.sleep(dash.probe_interval_s)
-        ok, _det = await _dashboard_ok(lab, cfg)
+        ok, det = await _dashboard_ok(lab, cfg)
         if ok:
             consecutive_failures = 0
             if was_down:
@@ -1149,12 +1220,15 @@ async def _dashboard_monitor_loop(
             except Exception as exc:  # pragma: no cover
                 logger.error("SDL dashboard monitor remediation failed: %s", exc)
             continue
-        was_down = True
+        recovered = False
         try:
             async with semaphore:
-                await _dashboard_alert_once(channel, lab, cfg)
+                recovered = await _dashboard_handle_down(channel, lab, cfg, det)
         except Exception as exc:  # pragma: no cover
             logger.error("SDL dashboard monitor alert failed: %s", exc)
+        was_down = not recovered
+        if recovered:
+            consecutive_failures = 0
 
 
 def register_dashboard_monitor(
