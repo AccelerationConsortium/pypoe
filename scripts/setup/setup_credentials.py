@@ -64,6 +64,7 @@ POE_API_KEY={api_key}
         # Write .env file
         with open(env_path, 'w') as f:
             f.write(env_content)
+        os.chmod(env_path, 0o600)
         
         print(f"Credentials saved to: {env_path}")
         print()
