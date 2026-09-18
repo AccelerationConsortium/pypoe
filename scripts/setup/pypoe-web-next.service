@@ -1,12 +1,14 @@
-# PyPoe Web UI — React preview (parallel-deploy migration).
+# PyPoe Web UI — React (parallel-deploy migration).
 #
-# Runs the new React UI as a SECOND service on :8007 alongside the live Jinja
-# UI (pypoe-web.service on :8006), sharing the same database. It serves the
-# built frontend (frontend/dist) via the SPA wrapper. Behind the edge it is
-# reached at /pypoe-next/ (banner-only, not enforced). See
-# docs/REACT_UI_MIGRATION.md.
+# Runs the new React UI as a SECOND service on loopback :8007 alongside the
+# live Jinja UI (pypoe-web.service on :8006), sharing the same database. It
+# serves the built frontend (frontend/dist) via the SPA wrapper. Behind the
+# dashboard edge it is reached at /pypoe-next/, forward_auth-gated like /pypoe
+# (ac-organic-lab deploy/Caddyfile.single-edge). Loopback bind on purpose: the
+# edge on the same host is the only client. Moved from gaia 2026-09-18.
+# See docs/REACT_UI_MIGRATION.md.
 #
-# Prereq: build the frontend for the preview base first:
+# Prereq: build the frontend for this base first:
 #   cd /home/sdl2/caoyang/pypoe/frontend && npm ci && VITE_BASE=/pypoe-next/ npm run build
 #
 # Install:
@@ -18,7 +20,7 @@
 # /pypoe/ route to :8007, then retire pypoe-web.service.
 
 [Unit]
-Description=PyPoe Web UI (React preview, :8007)
+Description=PyPoe Web UI (React, :8007, SDL2 orchestration host)
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
@@ -28,17 +30,17 @@ User=sdl2
 Group=sdl2
 WorkingDirectory=/home/sdl2/caoyang/pypoe
 Environment=PYTHONPATH=/home/sdl2/caoyang/pypoe/src
-Environment=PATH=/home/sdl2/pyenv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/sdl2/.local/bin:/home/sdl2/.nvm/versions/node/v24.21.0/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYPOE_SPA_DIST=/home/sdl2/caoyang/pypoe/frontend/dist
 EnvironmentFile=/home/sdl2/caoyang/pypoe/.env
-ExecStart=/bin/bash -lc 'exec /home/sdl2/caoyang/pypoe/.venv/bin/uvicorn pypoe.interfaces.web.spa_app:get_app --factory --host "100.64.254.6" --port "8007"'
+# Loopback only: the dashboard edge (forward_auth) is the sole client.
+ExecStart=/bin/bash -lc 'exec /home/sdl2/caoyang/pypoe/.venv/bin/uvicorn pypoe.interfaces.web.spa_app:get_app --factory --host "127.0.0.1" --port "8007"'
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
 SyslogIdentifier=pypoe-web-next
 StandardOutput=journal
 StandardError=journal
-
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=false
