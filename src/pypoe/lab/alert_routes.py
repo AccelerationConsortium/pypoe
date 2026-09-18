@@ -21,6 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 try:
     from fastapi import APIRouter, FastAPI, HTTPException, Request, status
@@ -778,6 +779,13 @@ async def _assistant_remediate(
     ok, det = await _assistant_health_ok(lab, asst.health_url)
     if ok:
         return True, [("baseline re-probe", True, det)]
+
+    # A remote health target cannot be repaired by restarting this host's API.
+    # In particular, migration leaves retired units here that must stay stopped.
+    if urlsplit(asst.health_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return False, [("remote health probe", False, det),
+                       ("local remediation skipped", True,
+                        "Assistant runs on another host; no local service or credential changes attempted.")]
 
     # 1. If the backing service is down, try to start it.
     if not _service_active(asst.service_name):
