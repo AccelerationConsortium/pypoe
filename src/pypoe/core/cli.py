@@ -37,7 +37,7 @@ Examples:
 
   # Lab integration (requires `pip install -e '.[lab]'`)
   pypoe lab-status              # Print aggregator health + non-ready devices
-  pypoe lab-mcp                 # Run the MCP server on stdio (for Claude Desktop)
+  pypoe lab-mcp                 # Run the read-only lab MCP server on stdio
 
 Background services:
   Use systemd to keep pypoe web and pypoe slack running after logout.
@@ -73,7 +73,7 @@ Quick Start:
     # Lab integration (AC Organic Self-driving Lab dashboard)
     lab_mcp_parser = subparsers.add_parser(
         'lab-mcp',
-        help='Run the read-only lab MCP server on stdio (for Claude Desktop / Code)',
+        help='Run the read-only lab MCP server on stdio',
     )
     lab_mcp_parser.add_argument(
         '--base-url',

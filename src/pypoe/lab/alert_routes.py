@@ -3,11 +3,11 @@
 Mounted onto PyPoe's existing FastAPI app (``interfaces/web/app.py``).
 Receives Uptime Kuma's default JSON payload, posts an instant
 "Investigating…" message into Slack, and kicks off a background
-``codex exec`` invocation against the lab MCP server. The investigation
-result is appended as a threaded reply.
+OpenRouter investigation (GPT-5.6 Luna) against the in-process lab
+tools. The investigation result is appended as a threaded reply.
 
 Concurrency is bounded by a process-wide semaphore so a flood of alerts
-doesn't fork an unbounded number of ``codex`` subprocesses.
+doesn't start an unbounded number of investigations.
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
@@ -39,128 +37,18 @@ except ImportError:  # pragma: no cover - web-ui extra not installed
 from ..core.mrkdwn import to_mrkdwn
 from .config import load_config
 from .http_client import LabClient
+from .investigator import run_investigation
 
 logger = logging.getLogger(__name__)
 
 _MAX_INVESTIGATOR_OUTPUT_CHARS = 4000
 _DEFAULT_MAX_CONCURRENT = 2
 
-#: Investigator mandate, injected as Codex developer instructions.
-SYSTEM_PROMPT = """You are the AC Organic Self-driving Lab's automated incident \
-investigator. An alert has fired; investigate it using the read-only \
-`pypoe-lab` MCP server and report a concise root-cause summary for a Slack \
-thread.
-
-You are READ-ONLY. You cannot actuate hardware and must never propose calling \
-`/control/*` endpoints directly. If recovery needs a control action, recommend \
-it in plain English for a human or a `lab-skills` workflow to carry out.
-
-Ground every conclusion in evidence you actually read via the MCP tools. If the \
-data does not support a conclusion, say so plainly rather than speculate.
-
-Keep the final Slack reply concise, with a short labelled paragraph for each
-consulted model and a final Lead investigator paragraph. Each model's section,
-including your own, must be 100 words or fewer; this is a ceiling, not a target.
-Summarise each model's diagnosis, supporting evidence, and recommended action.
-In your conclusion, resolve meaningful disagreement and state the next action.
-Say "unconfirmed" when the evidence is insufficient. If a consultation fails,
-use a single short line under that model's name; never invent its opinion.
-If no models were consulted, provide only your conclusion in 100 words or fewer.
-Avoid tool-call narration, raw logs, repeated alert details, and repeated
-arguments. Keep detailed findings in the journal observation."""
-
-
-def _investigator_runtime_dir() -> Path:
-    """Scratch cwd outside the repository, avoiding project instructions.
-
-    Override with ``PYPOE_INVESTIGATOR_RUNTIME_DIR``.
-    """
-
-    d = Path(
-        os.environ.get(
-            "PYPOE_INVESTIGATOR_RUNTIME_DIR",
-            str(Path.home() / ".pypoe" / "investigator"),
-        )
-    )
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _investigator_cwd() -> str:
-    return os.environ.get("PYPOE_INVESTIGATOR_CWD") or str(_investigator_runtime_dir())
-
-
-def _codex_binary() -> Optional[str]:
-    """Resolve the ``codex`` CLI, tolerating a minimal systemd PATH.
-
-    PyPoe's web service runs under systemd with a PATH that usually excludes
-    ``~/.local/bin``, so ``shutil.which`` alone often misses a per-user install.
-    Honour an explicit override, then fall back to well-known install paths.
-    """
-
-    override = os.environ.get("PYPOE_CODEX_BIN")
-    if override:
-        return override
-    found = shutil.which("codex")
-    if found:
-        return found
-    candidates = [
-        Path.home() / ".local" / "bin" / "codex",
-        Path("/usr/local/bin/codex"),
-        Path("/opt/codex/bin/codex"),
-        Path("/home/sdl2/.local/bin/codex"),
-    ]
-    for c in candidates:
-        if c.is_file() and os.access(c, os.X_OK):
-            return str(c)
-    return None
-
-
-def _pypoe_binary() -> str:
-    """Resolve the ``pypoe`` console script that launches the lab MCP server.
-
-    Prefers ``PYPOE_BIN``, then PATH, then the script sitting next to the
-    running interpreter (the common editable-install layout). Falls back to the
-    bare name so a mis-resolved env still produces a legible spawn error.
-    """
-
-    override = os.environ.get("PYPOE_BIN")
-    if override:
-        return override
-    found = shutil.which("pypoe")
-    if found:
-        return found
-    sibling = Path(sys.executable).with_name("pypoe")
-    if sibling.is_file() and os.access(sibling, os.X_OK):
-        return str(sibling)
-    return "pypoe"
-
-
-def _codex_mcp_args(cfg) -> list[str]:
-    """Configure only the lab server; pass secrets through env, never argv."""
-    server = {
-        "command": _pypoe_binary(),
-        "args": ["lab-mcp"],
-        "env_vars": [
-            "POE_API_KEY", "OPENROUTER_API_KEY", "LAB_MCP_AGENT_SOURCE",
-            "LAB_MCP_HTTP_TIMEOUT", "LAB_CONSULT_ENABLED", "LAB_CONSULT_MODELS",
-            "PYPOE_LAB_CONFIG",
-        ],
-        "required": True,
-        # Equivalent to the former Claude --allowedTools lab-server glob.
-        "default_tools_approval_mode": "approve",
-    }
-    args = []
-    for key, value in server.items():
-        args.extend(["-c", f"mcp_servers.pypoe-lab.{key}={json.dumps(value)}"])
-    args.extend(["-c", f"mcp_servers.pypoe-lab.env.LAB_API_URL={json.dumps(cfg.api_url)}"])
-    return args
-
 
 _INVESTIGATION_PROMPT_HEAD = """\
 An Uptime Kuma alert just fired for monitor `{monitor}` (msg: {msg}).
 
-You have a `pypoe-lab` MCP server registered. Use it to investigate.
+You have read-only lab investigation tools. Use them to investigate.
 
 Steps:
 
@@ -178,7 +66,7 @@ _DEVICE_PROMPT_HEAD = """\
 A lab device alert just fired: `{device_id}` reported `{event}`
 (message: {msg}).{platform_line}{last_error_line}{devices_line}
 
-You have a `pypoe-lab` MCP server registered. Use it to investigate.
+You have read-only lab investigation tools. Use them to investigate.
 
 Steps:
 
@@ -200,7 +88,7 @@ _CONSULT_BLOCK = """\
    For EACH model, call:
        consult_poe(model="<model>", question="<your question>", context="<lab state you gathered>")
    The `context` you pass MUST include the relevant facts you read in
-   step 2 — the consulted model has no MCP access of its own, so the
+   step 2 — the consulted model has no tools of its own, so the
    string you supply is the ONLY information it sees.
 
    Ask each model to answer in 100 words or fewer, covering its diagnosis,
@@ -501,7 +389,7 @@ async def _investigate(
 ) -> None:
     async with semaphore:
         try:
-            output = await _run_codex(prompt)
+            output = await _run_investigator(prompt)
         except Exception as exc:
             output = f":x: Investigation failed to start: {exc}"
         if len(output) > _MAX_INVESTIGATOR_OUTPUT_CHARS:
@@ -512,62 +400,17 @@ async def _investigate(
             logger.error("Failed to post investigation reply: %s", exc)
 
 
-async def _run_codex(prompt: str) -> str:
-    """Run Codex with pinned reasoning, isolated lab MCP tools and a timeout."""
-    binary = _codex_binary()
-    if binary is None:
-        return ":x: `codex` CLI not on PATH. Install Codex or set `PYPOE_CODEX_BIN`."
-
+async def _run_investigator(prompt: str) -> str:
+    """Run GPT-5.6 Luna on OpenRouter with in-process lab tools."""
     cfg = load_config()
-    timeout_s = cfg.alerts.investigation_timeout_s
-    args = [
-        binary, "exec", "--ignore-user-config", "--ignore-rules",
-        "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
-        "--model", cfg.alerts.investigation_model,
-        "-c", f"model_reasoning_effort={json.dumps(cfg.alerts.investigation_reasoning_effort)}",
-        "-c", "approval_policy=\"never\"",
-        "-c", f"developer_instructions={json.dumps(SYSTEM_PROMPT)}",
-        "-c", "features.shell_tool=false",
-        "-c", "features.unified_exec=false",
-        "-c", "features.apps=false",
-        "-c", "web_search=\"disabled\"",
-        "-c", "project_doc_max_bytes=0",
-        "-c", f"sqlite_home={json.dumps(str(_investigator_runtime_dir()))}",
-        "-c", f"log_dir={json.dumps(str(_investigator_runtime_dir()))}",
-        *_codex_mcp_args(cfg),
-        "--color", "never", prompt,
-    ]
-
+    timeout_s = float(cfg.alerts.investigation_timeout_s)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=_investigator_cwd(),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError:
-        return f":x: could not spawn `{binary}` — check the install / `PYPOE_CODEX_BIN`."
-
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        return await asyncio.wait_for(run_investigation(prompt), timeout=timeout_s)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
         return (
             f":x: investigation exceeded {timeout_s:.0f}s timeout and was killed "
             "before producing a summary."
         )
-
-    if proc.returncode != 0:
-        return (
-            f":x: `codex` exited {proc.returncode}\n"
-            f"```\n{stderr.decode(errors='replace').strip()[:1500]}\n```"
-        )
-    return stdout.decode(errors="replace").strip()
 
 
 # ---------------------------------------------------------------------------

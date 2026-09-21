@@ -10,8 +10,8 @@ Two independent sources produce CommonMark on the way to Slack:
 
 * **PyPoe's own strings** — the Slack bot's help, stats, and response
   headers are written with ``**...**`` (48 occurrences in ``bot.py``).
-* **Model output** — chat replies and the ``claude -p`` incident reports
-  in :mod:`pypoe.lab.alert_routes` are markdown by default; no prompt can
+* **Model output** — chat replies and OpenRouter incident reports in
+  :mod:`pypoe.lab.alert_routes` are markdown by default; no prompt can
   reliably suppress that.
 
 Rather than hand-editing every literal and hoping models comply, callers

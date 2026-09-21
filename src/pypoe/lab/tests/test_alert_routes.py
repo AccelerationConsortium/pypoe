@@ -1,13 +1,12 @@
 """Unit tests for ``pypoe.lab.alert_routes``.
 
-Uses FastAPI's TestClient + monkeypatches the Slack post + codex
-subprocess so the test never touches the network or the shell.
+Uses FastAPI's TestClient + monkeypatches the Slack post + investigator
+so the test never touches the network or OpenRouter.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
@@ -22,7 +21,7 @@ from pypoe.lab.config import reload_config
 from pypoe.lab.http_client import LabClient
 
 
-def _mk_app(monkeypatch, *, codex_output: str = "Investigation summary"):
+def _mk_app(monkeypatch, *, investigator_output: str = "Investigation summary"):
     posted: list[dict] = []
     investigations: list[str] = []
 
@@ -32,12 +31,12 @@ def _mk_app(monkeypatch, *, codex_output: str = "Investigation summary"):
         )
         return f"ts-{len(posted)}"
 
-    async def fake_run_codex(prompt):
+    async def fake_run_investigator(prompt):
         investigations.append(prompt)
-        return codex_output
+        return investigator_output
 
     monkeypatch.setattr(alert_routes, "_post_slack", fake_post_slack)
-    monkeypatch.setattr(alert_routes, "_run_codex", fake_run_codex)
+    monkeypatch.setattr(alert_routes, "_run_investigator", fake_run_investigator)
 
     fastapi_app = FastAPI()
     transport = httpx.MockTransport(lambda r: httpx.Response(200, json={}))
@@ -102,7 +101,7 @@ def test_build_prompt_no_models_uses_solo_block():
 
 def test_kuma_webhook_down_posts_investigating_then_summary(monkeypatch):
     app, posted, investigations = _mk_app(
-        monkeypatch, codex_output="Summary lines here"
+        monkeypatch, investigator_output="Summary lines here"
     )
 
     with TestClient(app) as client:
@@ -166,9 +165,9 @@ def test_kuma_webhook_recovery_posts_recovery_only(monkeypatch):
     assert investigations == []
 
 
-def test_kuma_webhook_truncates_long_codex_output(monkeypatch):
+def test_kuma_webhook_truncates_long_investigator_output(monkeypatch):
     long_text = "x" * 5000
-    app, posted, _ = _mk_app(monkeypatch, codex_output=long_text)
+    app, posted, _ = _mk_app(monkeypatch, investigator_output=long_text)
     with TestClient(app) as client:
         client.post(
             "/alerts/kuma",
@@ -185,7 +184,7 @@ def test_kuma_webhook_truncates_long_codex_output(monkeypatch):
 
 def test_device_alert_down_posts_investigating_then_summary(monkeypatch):
     app, posted, investigations = _mk_app(
-        monkeypatch, codex_output="Device diagnosis"
+        monkeypatch, investigator_output="Device diagnosis"
     )
 
     with TestClient(app) as client:
@@ -249,12 +248,12 @@ def test_device_alert_prefixes_platform_and_injects_context(monkeypatch):
         posted.append({"text": text, "thread_ts": thread_ts})
         return f"ts-{len(posted)}"
 
-    async def fake_run_codex(prompt):
+    async def fake_run_investigator(prompt):
         investigations.append(prompt)
         return "diagnosis"
 
     monkeypatch.setattr(alert_routes, "_post_slack", fake_post_slack)
-    monkeypatch.setattr(alert_routes, "_run_codex", fake_run_codex)
+    monkeypatch.setattr(alert_routes, "_run_investigator", fake_run_investigator)
 
     def handler(request):
         if request.url.path == "/api/platforms":
@@ -342,8 +341,8 @@ def test_device_alert_rejects_unknown_event(monkeypatch):
 
 
 def test_concurrency_bound_is_respected(monkeypatch):
-    """Two simultaneous alerts shouldn't run more than `max_concurrent` codex
-    subprocesses in parallel. Verified via observable peak concurrency."""
+    """Two simultaneous alerts shouldn't run more than `max_concurrent`
+    investigations in parallel. Verified via observable peak concurrency."""
 
     async def main():
         peak = {"value": 0, "current": 0, "lock": asyncio.Lock()}
@@ -353,7 +352,7 @@ def test_concurrency_bound_is_respected(monkeypatch):
         async def fake_post_slack(channel, text, thread_ts=None):
             return "ts"
 
-        async def fake_run_codex(prompt):
+        async def fake_run_investigator(prompt):
             async with peak["lock"]:
                 peak["current"] += 1
                 peak["value"] = max(peak["value"], peak["current"])
@@ -365,7 +364,7 @@ def test_concurrency_bound_is_respected(monkeypatch):
             return "done"
 
         monkeypatch.setattr(alert_routes, "_post_slack", fake_post_slack)
-        monkeypatch.setattr(alert_routes, "_run_codex", fake_run_codex)
+        monkeypatch.setattr(alert_routes, "_run_investigator", fake_run_investigator)
 
         fastapi_app = FastAPI()
         transport = httpx.MockTransport(
@@ -403,104 +402,23 @@ def test_concurrency_bound_is_respected(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _run_codex hardening (model pin, strict MCP config, cwd isolation, timeout)
+# _run_investigator timeout
 # ---------------------------------------------------------------------------
 
 
-class _FakeProc:
-    def __init__(self, out=b"ok summary", err=b"", returncode=0):
-        self._out = out
-        self._err = err
-        self.returncode = returncode
+def test_run_investigator_times_out(monkeypatch, tmp_path):
+    """A hung OpenRouter call is killed at the wallclock cap."""
 
-    async def communicate(self):
-        return (self._out, self._err)
+    async def hang(prompt):
+        await asyncio.sleep(10)
+        return "should not land"
 
-    async def wait(self):
-        return self.returncode
-
-
-def test_run_codex_builds_hardened_command(monkeypatch, tmp_path):
-    """Pin model/reasoning and isolate the lab MCP server and instructions."""
-
-    captured: dict = {}
-
-    async def fake_exec(*args, **kwargs):
-        captured["args"] = list(args)
-        captured["cwd"] = kwargs.get("cwd")
-        return _FakeProc(out=b"root cause: air pressure")
-
-    # Deterministic config (no packaged slack.yaml), isolated runtime dir.
-    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(tmp_path / "no-such.yaml"))
-    monkeypatch.setenv("PYPOE_INVESTIGATOR_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setenv("LAB_INVESTIGATION_MODEL", "gpt-5.6-luna")
-    reload_config()
-    monkeypatch.setattr(alert_routes, "_codex_binary", lambda: "/usr/bin/codex")
-    monkeypatch.setattr(alert_routes.asyncio, "create_subprocess_exec", fake_exec)
-
-    try:
-        out = asyncio.run(alert_routes._run_codex("investigate ot2_hte"))
-    finally:
-        reload_config()
-
-    args = captured["args"]
-    assert args[0] == "/usr/bin/codex"
-    assert "exec" in args and args[-1] == "investigate ot2_hte"
-    assert args[args.index("--model") + 1] == "gpt-5.6-luna"
-    assert 'model_reasoning_effort="max"' in args
-    assert "--ignore-user-config" in args
-    assert "--ignore-rules" in args
-    assert "--ephemeral" in args
-    assert args[args.index("--sandbox") + 1] == "read-only"
-    assert 'approval_policy="never"' in args
-    assert "features.shell_tool=false" in args
-    assert "features.apps=false" in args
-    assert f"developer_instructions={json.dumps(alert_routes.SYSTEM_PROMPT)}" in args
-    assert captured["cwd"] == str(tmp_path)
-    assert 'mcp_servers.pypoe-lab.args=["lab-mcp"]' in args
-    assert "mcp_servers.pypoe-lab.required=true" in args
-    assert 'mcp_servers.pypoe-lab.default_tools_approval_mode="approve"' in args
-    assert not (tmp_path / "mcp.json").exists()
-    assert out == "root cause: air pressure"
-
-
-def test_run_codex_times_out_and_kills(monkeypatch, tmp_path):
-    """A hung CLI is killed at the wallclock cap and reported, not left to
-    linger against the concurrency budget."""
-
-    killed = {"value": False}
-
-    class _HangProc:
-        returncode = None
-
-        async def communicate(self):
-            await asyncio.sleep(10)
-            return (b"", b"")
-
-        def kill(self):
-            killed["value"] = True
-            self.returncode = -9
-
-        async def wait(self):
-            return -9
-
-    async def fake_exec(*args, **kwargs):
-        return _HangProc()
-
-    monkeypatch.setenv("PYPOE_LAB_CONFIG", str(tmp_path / "no-such.yaml"))
-    monkeypatch.setenv("PYPOE_INVESTIGATOR_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("LAB_INVESTIGATION_TIMEOUT_S", "0.05")
     reload_config()
-    monkeypatch.setattr(alert_routes, "_codex_binary", lambda: "/usr/bin/codex")
-    monkeypatch.setattr(alert_routes.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(alert_routes, "run_investigation", hang)
 
-    try:
-        out = asyncio.run(alert_routes._run_codex("investigate"))
-    finally:
-        reload_config()
-
+    out = asyncio.run(alert_routes._run_investigator("investigate"))
     assert "timeout" in out.lower()
-    assert killed["value"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1056,20 +974,3 @@ async def test_post_slack_leaves_hand_written_mrkdwn_alone(capture_slack):
     line = ":white_check_mark: *SDL Assistant* recovered."
     await alert_routes._post_slack("#lab-alerts", line)
     assert capture_slack.captured["text"] == line
-
-
-def test_run_codex_missing_binary(monkeypatch):
-    monkeypatch.setattr(alert_routes, "_codex_binary", lambda: None)
-    assert "PYPOE_CODEX_BIN" in asyncio.run(alert_routes._run_codex("test"))
-
-
-def test_run_codex_reports_failure(monkeypatch, tmp_path):
-    async def fake_exec(*args, **kwargs):
-        return _FakeProc(out=b"", err=b"model unavailable", returncode=1)
-
-    monkeypatch.setenv("PYPOE_INVESTIGATOR_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(alert_routes, "_codex_binary", lambda: "/usr/bin/codex")
-    monkeypatch.setattr(alert_routes.asyncio, "create_subprocess_exec", fake_exec)
-    output = asyncio.run(alert_routes._run_codex("test"))
-    assert "`codex` exited 1" in output
-    assert "model unavailable" in output

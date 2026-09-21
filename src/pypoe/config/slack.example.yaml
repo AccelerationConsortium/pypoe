@@ -35,16 +35,16 @@ lab:
     command_prefix: /lab-
 
   alerts:
-    # Cap on simultaneous `codex exec` investigations from /alerts/kuma.
+    # Cap on simultaneous OpenRouter investigations from /alerts/kuma.
     # Survives alert storms; raise if you have lots of monitors.
     max_concurrent_investigations: 2
 
-    # Model for the investigator itself — runs on the local Codex CLI
-    # (your Codex login), NOT Poe. Pinned so it doesn't drift tiers.
+    # Model for the investigator itself — OpenRouter GPT-5.6 Luna
+    # (OPENROUTER_API_KEY). A short id is prefixed to openai/.
     investigation_model: gpt-5.6-luna
     investigation_reasoning_effort: max
 
-    # Hard wallclock cap (seconds) per investigation; a hung CLI is killed.
+    # Hard wallclock cap (seconds) per investigation; a hung request is killed.
     investigation_timeout_s: 300
 
   mcp:

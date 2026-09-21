@@ -1,9 +1,9 @@
 """Read-only + journaling + consultation MCP server for the AC Organic
 Self-driving Lab.
 
-Runs over stdio so Claude Desktop / Claude Code can register it with::
+Runs over stdio so any MCP client can register it as::
 
-    claude mcp add ac-organic-lab -- pypoe lab-mcp
+    pypoe lab-mcp
 
 Tools fall into three buckets:
 
@@ -157,11 +157,12 @@ def build_server(client: Optional[LabClient] = None) -> "FastMCP":
     async def consult_poe(
         model: str, question: str, context: Optional[str] = None
     ) -> dict:
-        """Ask another model (via Poe) for a second opinion.
+        """Ask another model (via Poe or OpenRouter) for a second opinion.
 
-        Shells out to ``pypoe cli chat`` with ``--bot <model>``. Costs
-        Poe compute points. Use sparingly — when Claude's confidence in
-        a diagnosis is low, or for cross-checking on ambiguous failures.
+        Shells out to ``pypoe cli chat`` with ``--bot <model>``. Routed
+        by that model's catalog entry. Use sparingly — when the lead
+        investigator's confidence is low, or for cross-checking
+        ambiguous failures.
         """
         return await _consult_poe(model, question, context)
 

@@ -105,17 +105,9 @@ systemctl --user is-active pypoe-web pypoe-slack
 
 ## Alert investigator
 
-Lab alert investigations use the local `codex exec` CLI with `gpt-5.6-luna`
-and `max` reasoning. Configure `lab.alerts.investigation_model` and
+Lab alert investigations call OpenRouter (`openai/gpt-5.6-luna`) with
+in-process lab tools. Configure `lab.alerts.investigation_model` and
 `investigation_reasoning_effort` in `src/pypoe/config/slack.yaml`, or override
 them with `LAB_INVESTIGATION_MODEL` and `LAB_INVESTIGATION_REASONING_EFFORT`.
-The service user must have a working Codex login. `PYPOE_CODEX_BIN` can point
-to a custom CLI installation. The CLI must support `--ignore-user-config`,
-`--ignore-rules`, and `--ephemeral`.
-
-Investigations load only the lab MCP server, disable shell and app tools,
-and run with a read-only sandbox and the existing 300-second timeout.
-Runtime state lives in `~/.pypoe/investigator` (override with
-`PYPOE_INVESTIGATOR_RUNTIME_DIR`); allow this directory in systemd's
-`ReadWritePaths` when filesystem hardening is enabled. Restart the web service
-after changing the investigator code or configuration.
+The service needs `OPENROUTER_API_KEY`. Restart the web service after changing
+the investigator code or configuration.

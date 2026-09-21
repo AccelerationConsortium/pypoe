@@ -3,13 +3,12 @@
 PyPoe ships an optional **lab-interface layer** for the AC Organic
 Self-driving Lab. With `pip install -e ".[lab]"` PyPoe gains:
 
-- a read-only **MCP server** (`pypoe lab-mcp`) for Claude Desktop /
-  Claude Code, so you can ask Claude about lab state in natural
-  language;
+- a read-only **MCP server** (`pypoe lab-mcp`) so an MCP client can
+  ask about lab state in natural language;
 - **`/lab-*` Slack slash commands** (no LLM, instant response) for
   humans on the team;
 - a **`POST /alerts/kuma` webhook** mounted on `pypoe web` for Uptime
-  Kuma to trigger autonomous investigations via `claude -p`;
+  Kuma to trigger autonomous OpenRouter investigations;
 - a **`pypoe lab-status`** one-shot CLI that prints aggregator health
   and any device that needs operator attention.
 
@@ -28,14 +27,15 @@ Browser ──► Next.js (web/, :8000) ──► FastAPI aggregator (:8001) ─
                                 │              │  POST /api/ingest/events
                                 │              │  (agent observations)
                                 │              │
-   Claude Code / Desktop ──MCP──┘              │
-   (pypoe lab-mcp; READ + OBSERVE)             │
-                                               │
-   PyPoe Slack bot ──/lab-* commands ──────────┤   (no LLM)
-                                               │
-   Uptime Kuma ──── /alerts/kuma ──► claude -p ─┘
+   MCP client ── pypoe lab-mcp ─────────┘              │
+   (READ + OBSERVE)                                    │
+                                                       │
+   PyPoe Slack bot ──/lab-* commands ──────────────────┤   (no LLM)
+                                                       │
+   Uptime Kuma ──── /alerts/kuma ──► OpenRouter ───────┘
+                                       (GPT-5.6 Luna)
                                        │
-                                       ├─► consult_poe (PoeChatClient → Poe / OpenRouter)
+                                       ├─► consult_poe (Poe / OpenRouter)
                                        └─► ask_human  (Slack thread reply)
 ```
 
@@ -88,8 +88,8 @@ lab:
     alert_channel: "#lab-alerts"        # Kuma alerts + ask_human
     command_prefix: /lab-               # namespace for /lab-* commands
   alerts:
-    max_concurrent_investigations: 2    # cap on simultaneous claude -p
-    investigation_model: claude-sonnet-5 # the local-CLI investigator (NOT Poe)
+    max_concurrent_investigations: 2    # cap on simultaneous OpenRouter runs
+    investigation_model: gpt-5.6-luna   # OpenRouter lead investigator
     investigation_timeout_s: 300        # hard wallclock cap per investigation
   mcp:
     agent_source: claude-agent          # stamped into observations
@@ -101,13 +101,13 @@ lab:
       - deepseek/deepseek-v4-flash-0731 # config/models.yaml::chat_models
 ```
 
-Two distinct models are in play: the **investigator** runs on the local
-Claude Code CLI (`investigation_model`, default `claude-sonnet-5`, env
-`LAB_INVESTIGATION_MODEL`) on your Claude subscription — *not* a chat
-provider; the **second opinions** (`consult.models`, default
-`z-ai/glm-5.2`, `deepseek/deepseek-v4-flash-0731`) go through PyPoe's
-provider seam, so each is routed to whichever provider its
-`models.yaml::chat_models` entry declares — OpenRouter for both defaults.
+Two distinct models are in play: the **investigator** is GPT-5.6 Luna on
+OpenRouter (`investigation_model`, default `gpt-5.6-luna` →
+`openai/gpt-5.6-luna`, env `LAB_INVESTIGATION_MODEL`); the **second
+opinions** (`consult.models`, default `z-ai/glm-5.2`,
+`deepseek/deepseek-v4-flash-0731`) go through PyPoe's provider seam, so
+each is routed to whichever provider its `models.yaml::chat_models`
+entry declares — OpenRouter for both defaults.
 
 Keep `consult.models` in step with the catalog: a name absent from
 `chat_models` still resolves (to the default provider) and then fails at call
@@ -115,16 +115,16 @@ time. The previous defaults were Poe-routed and stopped working when the Poe
 subscription lapsed.
 
 When `consult.enabled` is true (default), every `/alerts/kuma`
-investigation requires Claude to call `consult_poe` once per model
-listed under `consult.models`. Claude then synthesises all responses
-into a Slack thread reply that includes a headline, per-model
-bullets (with divergences flagged explicitly), and Claude's own
-diagnosis. Failures of individual `consult_poe` calls are noted in
-the summary, never aborts.
+investigation requires the lead model to call `consult_poe` once per
+model listed under `consult.models`. It then synthesises all
+responses into a Slack thread reply that includes a headline,
+per-model bullets (with divergences flagged explicitly), and the
+lead investigator's own diagnosis. Failures of individual
+`consult_poe` calls are noted in the summary, never abort.
 
 Set `consult.enabled: false` (or leave `consult.models` empty) to
-keep Claude solo — the old prompt that suggested consultation only
-"if a failure looks ambiguous."
+keep the lead investigator solo — the old prompt that suggested
+consultation only "if a failure looks ambiguous."
 
 To bring up a second lab in the same Slack workspace, give it a
 different prefix and channel:
@@ -194,15 +194,17 @@ not exposed.
 
 ## Use it
 
-### From Claude Desktop / Code (MCP)
+### From an MCP client (optional)
 
-Register the server once:
+`pypoe lab-mcp` is a read-only stdio server. Alert investigations do
+**not** use it — they call the same tools in-process over OpenRouter.
+To use the server from any MCP client:
 
 ```bash
-claude mcp add ac-organic-lab -- pypoe lab-mcp
+pypoe lab-mcp
 ```
 
-…then in any Claude session ask things like:
+Then ask things like:
 
 > List lab equipment and tell me which ones are not ready.
 
@@ -290,74 +292,56 @@ POST its default JSON payload to `http://<host>:<port>/alerts/kuma`
    :mag: Investigating…` to `LAB_SLACK_CHANNEL` and captures the
    thread `ts`.
 2. A background task (bounded by `consult.max_concurrent_investigations`)
-   spawns `claude -p` with a prompt that tells Claude to:
+   runs GPT-5.6 Luna on OpenRouter with in-process lab tools:
    - call `aggregator_health()` + `list_equipment()` first;
    - for each non-healthy device, call `get_equipment_status()` +
      `recent_events()`;
    - call `consult_poe(model=…)` once per entry in `consult.models`
      (if `consult.enabled`) for an independent second opinion;
-   - optionally call `ask_human(...)` for judgment calls;
    - call `append_observation(device_id, ...)` per affected device;
    - synthesize a Slack reply: headline → per-model bullets with
-     divergences explicit → Claude's own diagnosis → plain-English
+     divergences explicit → lead diagnosis → plain-English
      recovery recommendation (no `/control/*` calls).
 3. The synthesised summary lands as a **threaded reply** under the
-   original `:rotating_light:` post (truncated to ~3000 chars).
+   original `:rotating_light:` post (truncated to ~4000 chars).
 
 **On a RECOVERY alert** (`heartbeat.status == 1`): PyPoe posts a
 single `:white_check_mark: recovered` line. **No investigation, no
-Claude, no Poe.** This keeps the alert loop quiet for normal
+OpenRouter, no Poe.** This keeps the alert loop quiet for normal
 flap recoveries.
 
 **Choosing the Kuma monitor name matters.** The `monitor.name` you
-typed in Kuma is the first signal Claude has for *which device the
-alert is about*. Naming Kuma monitors after the `equipment.yaml` id
-(e.g. `plateloc`, `dose_every_well`, `aggregator`) lets Claude map
-directly without guesswork. Otherwise Claude falls back to scanning
-all non-healthy devices via `list_equipment()`.
+typed in Kuma is the first signal the investigator has for *which
+device the alert is about*. Naming Kuma monitors after the
+`equipment.yaml` id (e.g. `plateloc`, `dose_every_well`,
+`aggregator`) lets it map directly without guesswork. Otherwise it
+falls back to scanning all non-healthy devices via
+`list_equipment()`.
 
-**Auth:** the `claude` CLI authenticates with **Claude Team** OAuth
-(run `claude` once on the host), so no Anthropic API key is needed in
-the PyPoe environment. `consult_poe` uses whichever provider key the consulted
-model's catalog entry requires — `OPENROUTER_API_KEY` for both defaults.
+**Auth:** the lead investigator uses `OPENROUTER_API_KEY`.
+`consult_poe` uses whichever provider key the consulted model's
+catalog entry requires — `OPENROUTER_API_KEY` for both defaults, or
+`POE_API_KEY` for a Poe-routed model.
 
-**Hardened, self-contained invocation.** The webhook drives `claude`
-with the same safeguards as the dashboard assistant, so it does **not**
-depend on any out-of-band `claude mcp add` registration:
+**In-process invocation.** The webhook does **not** spawn a local
+CLI or an MCP stdio server:
 
-- **Own MCP config.** `_run_claude` writes a strict `mcp.json` that
-  registers only the read-only `pypoe-lab` server (`pypoe lab-mcp`) and
-  passes it via `--mcp-config … --strict-mcp-config`. Filesystem-
-  discovered `claude` MCP config is ignored, so behaviour no longer
-  varies with the `pypoe web` working directory. `LAB_API_URL`,
-  `POE_API_KEY`, and the `LAB_MCP_*` / `LAB_CONSULT_*` vars are forwarded
-  into the server subprocess's env.
-- **Pre-allowed tools.** Headless `-p` runs cannot grant permissions
-  interactively, so the webhook passes `--allowedTools
-  "mcp__pypoe-lab__*"` (change it in `lab/alert_routes.py` if you rename
-  the server).
-- **Pinned model.** `--model` is set from `alerts.investigation_model`
-  (default `claude-sonnet-5`; env `LAB_INVESTIGATION_MODEL`) rather than
-  inheriting the host CLI default, so investigations don't silently drift
-  tiers.
-- **Platform label.** The alert headline and the investigation prompt are
-  enriched with the device's platform (best-effort, via `GET /api/platforms`):
-  the Slack line reads `HTE Platform · ot2_hte`, and the prompt lists the
-  co-located devices so shared-cause reasoning is sharper. Kuma *service*
-  monitors not in any platform section stay unlabelled.
-- **cwd isolation.** The subprocess runs in a scratch dir outside the
-  repo (`PYPOE_INVESTIGATOR_RUNTIME_DIR`, default
-  `~/.cache/pypoe-investigator`) so it never auto-loads the repo's
-  `CLAUDE.md` / `CLAUDE.local.md` bundle on every alert.
+- **Pinned model.** `alerts.investigation_model` (default
+  `gpt-5.6-luna` → `openai/gpt-5.6-luna`; env
+  `LAB_INVESTIGATION_MODEL`) is the OpenRouter id. Short names get
+  the `openai/` prefix.
+- **Platform label.** The alert headline and the investigation
+  prompt are enriched with the device's platform (best-effort, via
+  `GET /api/platforms`): the Slack line reads `HTE Platform ·
+  ot2_hte`, and the prompt lists the co-located devices so
+  shared-cause reasoning is sharper. Kuma *service* monitors not in
+  any platform section stay unlabelled.
 - **Wallclock timeout.** Capped by `alerts.investigation_timeout_s`
-  (default 300 s; env `LAB_INVESTIGATION_TIMEOUT_S`); a hung CLI is
-  killed and reported instead of holding a concurrency slot forever.
-- **Role via system prompt.** The read-only, no-`/control/*` mandate is
-  injected with `--append-system-prompt`.
-
-Registering the server manually (`claude mcp add pypoe-lab -- pypoe
-lab-mcp`) is still useful for *interactive* Claude Desktop / Code use,
-but is no longer required for the webhook.
+  (default 300 s; env `LAB_INVESTIGATION_TIMEOUT_S`); a hung
+  OpenRouter call is killed and reported instead of holding a
+  concurrency slot forever.
+- **Role via system prompt.** The read-only, no-`/control/*`
+  mandate is injected into the OpenRouter request.
 
 ### From the lab aggregator (device alerts)
 
@@ -376,7 +360,7 @@ POST /alerts/device
 
 Events: `unreachable` | `error` | `e_stop` | `degraded` | `recovered`.
 Same Slack channel and investigation machinery as the Kuma path, but
-the prompt is **device-focused** — Claude goes straight to
+the prompt is **device-focused** — the investigator goes straight to
 `get_equipment_status("<device_id>")`, `recent_events`, and
 `device_uptime` instead of a fleet-wide sweep, and the device's
 `last_error` rides along in the prompt. `recovered` posts a
@@ -414,20 +398,20 @@ send browser-style `Accept` headers, so login-redirecting endpoints
 ### From the command line
 
 ```bash
-# Quick "is the lab healthy?" check, no Slack, no Claude:
+# Quick "is the lab healthy?" check, no Slack, no model:
 pypoe lab-status
 
 # Override base URL for ad-hoc checks against a non-default aggregator:
 pypoe lab-status --base-url http://lab-staging:8000
 
-# Run the MCP server interactively (Claude Desktop / Code spawns this):
+# Run the optional read-only MCP server on stdio:
 pypoe lab-mcp
 ```
 
 ## What gets stored where
 
-A common question: does the Slack thread / Claude's report / the
-human's reply get persisted anywhere?
+A common question: does the Slack thread / the investigator's report /
+the human's reply get persisted anywhere?
 
 | Artifact | Stored where? | Queryable? |
 |---|---|---|
@@ -452,11 +436,11 @@ the aggregator's DB so they render alongside `state_transition`,
   "event_type": "agent_observation",
   "from_state": null,
   "to_state": null,
-  "message": "<one-line summary from Claude>",
+  "message": "<one-line summary from the investigator>",
   "payload": {
     "source": "claude-agent",           // from cfg.mcp.agent_source
     "severity": "info | warning | error",
-    "<anything Claude passed in extra>": "..."
+    "<anything the investigator passed in extra>": "..."
   }
 }
 ```
@@ -485,9 +469,9 @@ the message field intact when read back via `recent_events()`.
 |---|---|---|
 | `pypoe lab-status` says "Aggregator unreachable" | Aggregator service down or `LAB_API_URL` wrong | `curl $LAB_API_URL/api/health`; check `journalctl -u ac-organic-lab-api` on the dashboard host. |
 | `/lab-*` commands missing in Slack | `LAB_API_URL` / `PYPOE_ENABLE_LAB` unset, or `[lab]` extra not installed | Set env var and reinstall with `pip install -e ".[lab]"`. Restart `pypoe slack`. |
-| `claude` exits 127 in Kuma thread | `claude` CLI not on PATH on the PyPoe host | Install Claude Code locally; run `claude` once to OAuth into Claude Team. |
+| Investigation reply says OpenRouter key missing | `OPENROUTER_API_KEY` unset in the `pypoe-web` environment | Put the key in `.env` (`EnvironmentFile=` on the unit) and restart `pypoe-web`. |
 | `consult_poe` returns `returncode: 2` with "not accessible" | The consulted model's provider key is unset/expired, or the name isn't in `models.yaml::chat_models` | Set that provider's key in `.env` (`OPENROUTER_API_KEY` / `POE_API_KEY`); check `consult.models` entries match `chat_models` exactly — an unlisted name silently routes to the default provider and fails. |
-| `consult_poe` returns `returncode: 1` | Transient network error or a provider-side blip | Investigation continues; Claude notes the failure in the summary. Retry next alert. |
+| `consult_poe` returns `returncode: 1` | Transient network error or a provider-side blip | Investigation continues; the lead notes the failure in the summary. Retry next alert. |
 | `ask_human` immediately times out | `SLACK_BOT_TOKEN` missing or the bot isn't in `LAB_SLACK_CHANNEL` | Invite the bot to the channel, double-check token. |
 | Observations don't appear in the dashboard sidebar | Severity / source ended up in `context` instead of `extra` | This package always uses `extra`. If you wrote a custom MCP tool, port it. |
 | `/sdl2-lab-status` says "did not respond" in Slack | Slack app config doesn't declare that command name | Each `/lab-*` (or `/<prefix>-…`) must be added in the Slack app admin UI before the bot can receive it. Reinstall the app after adding. |

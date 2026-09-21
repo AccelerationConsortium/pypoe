@@ -40,15 +40,14 @@ started in one interface continue in the others.
 PyPoe also ships a read-only **lab interface layer** for the AC Organic
 Self-driving Lab. With `pip install -e ".[lab]"` you additionally get:
 
-- `pypoe lab-mcp` — a read-only MCP server (talk to the lab from
-  Claude Desktop / Code).
+- `pypoe lab-mcp` — a read-only MCP server for lab state.
 - `pypoe lab-status` — one-shot aggregator health summary.
 - `/lab-*` Slack slash commands (auto-registered on `pypoe slack` when
   `LAB_API_URL` is set).
 - `POST /alerts/kuma` + `POST /alerts/device` webhooks (auto-mounted on
   `pypoe web` under the same condition): Uptime Kuma service alerts and
   aggregator-pushed device alerts, both posted to Slack with a threaded
-  `claude -p` investigation.
+  OpenRouter investigation (GPT-5.6 Luna).
 - `GET /kuma/status` — a STATUS_SPEC envelope gateway-fronting Uptime
   Kuma so the lab dashboard can show an alerting-watchdog tile.
 

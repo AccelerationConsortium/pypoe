@@ -49,14 +49,15 @@ class SlackSection:
 @dataclass(frozen=True)
 class AlertsSection:
     max_concurrent_investigations: int = 2
-    #: Lead investigator runs through local Codex authentication, not Poe.
+    #: Lead investigator runs on OpenRouter (GPT-5.6 Luna). A short id such as
+    #: ``gpt-5.6-luna`` is prefixed to ``openai/gpt-5.6-luna``.
     #: Env: ``LAB_INVESTIGATION_MODEL`` / ``LAB_INVESTIGATION_REASONING_EFFORT``.
     investigation_model: str = "gpt-5.6-luna"
     investigation_reasoning_effort: str = "max"
-    #: Hard wallclock cap (seconds) on a single ``codex`` investigation
-    #: subprocess. Generous by default because an investigation fans out to
-    #: several MCP reads plus per-model ``consult_poe`` round-trips, but bounded
-    #: so a hung CLI can never linger. Env: ``LAB_INVESTIGATION_TIMEOUT_S``.
+    #: Hard wallclock cap (seconds) on a single OpenRouter investigation.
+    #: Generous by default because an investigation fans out to several lab
+    #: reads plus per-model ``consult_poe`` round-trips, but bounded so a hung
+    #: request can never linger. Env: ``LAB_INVESTIGATION_TIMEOUT_S``.
     investigation_timeout_s: float = 300.0
 
 
