@@ -44,6 +44,13 @@ lab:
     investigation_model: gpt-5.6-luna
     investigation_reasoning_effort: max
 
+    # Tried in order when Luna is rate-limited ("429 ... temporarily
+    # rate-limited upstream") or transiently failing. Full OpenRouter slugs,
+    # each tool-calling capable; leave empty to disable failover.
+    investigation_fallback_models:
+      - anthropic/claude-sonnet-5
+      - z-ai/glm-5.3
+
     # Hard wallclock cap (seconds) per investigation; a hung request is killed.
     investigation_timeout_s: 300
 

@@ -401,7 +401,11 @@ async def _investigate(
 
 
 async def _run_investigator(prompt: str) -> str:
-    """Run GPT-5.6 Luna on OpenRouter with in-process lab tools."""
+    """Run the OpenRouter investigator with in-process lab tools.
+
+    The timeout covers the whole run, retries and model failover included
+    (see :func:`pypoe.lab.investigator.run_investigation`).
+    """
     cfg = load_config()
     timeout_s = float(cfg.alerts.investigation_timeout_s)
     try:

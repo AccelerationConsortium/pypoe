@@ -90,6 +90,9 @@ lab:
   alerts:
     max_concurrent_investigations: 2    # cap on simultaneous OpenRouter runs
     investigation_model: gpt-5.6-luna   # OpenRouter lead investigator
+    investigation_fallback_models:      # tried when the primary is 429/5xx
+      - anthropic/claude-sonnet-5
+      - z-ai/glm-5.3
     investigation_timeout_s: 300        # hard wallclock cap per investigation
   mcp:
     agent_source: claude-agent          # stamped into observations
@@ -97,15 +100,15 @@ lab:
   consult:
     enabled: true                       # ask other models for second opinions
     models:                             # one consult_poe call per entry; names
-      - z-ai/glm-5.2                    # must match an entry in
-      - deepseek/deepseek-v4-flash-0731 # config/models.yaml::chat_models
+      - z-ai/glm-5.3                    # must match an entry in
+      - deepseek/deepseek-v4.1-flash    # config/models.yaml::chat_models
 ```
 
 Two distinct models are in play: the **investigator** is GPT-5.6 Luna on
 OpenRouter (`investigation_model`, default `gpt-5.6-luna` →
 `openai/gpt-5.6-luna`, env `LAB_INVESTIGATION_MODEL`); the **second
-opinions** (`consult.models`, default `z-ai/glm-5.2`,
-`deepseek/deepseek-v4-flash-0731`) go through PyPoe's provider seam, so
+opinions** (`consult.models`, default `z-ai/glm-5.3`,
+`deepseek/deepseek-v4.1-flash`) go through PyPoe's provider seam, so
 each is routed to whichever provider its `models.yaml::chat_models`
 entry declares — OpenRouter for both defaults.
 
@@ -330,6 +333,22 @@ CLI or an MCP stdio server:
   `gpt-5.6-luna` → `openai/gpt-5.6-luna`; env
   `LAB_INVESTIGATION_MODEL`) is the OpenRouter id. Short names get
   the `openai/` prefix.
+- **Retry + model failover.** A rate limit or transient provider
+  fault (429/5xx, whether reported as the HTTP status or as
+  `error.code` in a 200 body) is retried on the same model after
+  5 s then 20 s; if it still fails, the investigation continues on
+  the next entry of `alerts.investigation_fallback_models`
+  (default `anthropic/claude-sonnet-5`, `z-ai/glm-5.3`; env
+  `LAB_INVESTIGATION_FALLBACK_MODELS`, comma-separated, empty
+  disables). The message history is provider-agnostic, so a switch
+  keeps every tool result already gathered, and whichever model
+  answers is pinned for the remaining tool rounds. The Slack reply
+  carries a one-line note when it came from a fallback. Errors that
+  retrying cannot fix — bad key, blocked model, bad request — fail
+  immediately. Fallback slugs must be tool-calling capable and
+  present in `models.yaml::chat_models`. The backoff and the
+  failover attempts all run inside `investigation_timeout_s`, which
+  still caps the whole investigation.
 - **Platform label.** The alert headline and the investigation
   prompt are enriched with the device's platform (best-effort, via
   `GET /api/platforms`): the Slack line reads `HTE Platform ·

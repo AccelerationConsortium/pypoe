@@ -106,8 +106,12 @@ systemctl --user is-active pypoe-web pypoe-slack
 ## Alert investigator
 
 Lab alert investigations call OpenRouter (`openai/gpt-5.6-luna`) with
-in-process lab tools. Configure `lab.alerts.investigation_model` and
-`investigation_reasoning_effort` in `src/pypoe/config/slack.yaml`, or override
-them with `LAB_INVESTIGATION_MODEL` and `LAB_INVESTIGATION_REASONING_EFFORT`.
+in-process lab tools. Configure `lab.alerts.investigation_model`,
+`investigation_fallback_models`, and `investigation_reasoning_effort` in
+`src/pypoe/config/slack.yaml`, or override them with
+`LAB_INVESTIGATION_MODEL`, `LAB_INVESTIGATION_FALLBACK_MODELS`, and
+`LAB_INVESTIGATION_REASONING_EFFORT`. A rate-limited (429) or transiently
+failing primary is retried, then the investigation continues on the next
+fallback model.
 The service needs `OPENROUTER_API_KEY`. Restart the web service after changing
 the investigator code or configuration.

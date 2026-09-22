@@ -47,7 +47,8 @@ Self-driving Lab. With `pip install -e ".[lab]"` you additionally get:
 - `POST /alerts/kuma` + `POST /alerts/device` webhooks (auto-mounted on
   `pypoe web` under the same condition): Uptime Kuma service alerts and
   aggregator-pushed device alerts, both posted to Slack with a threaded
-  OpenRouter investigation (GPT-5.6 Luna).
+  OpenRouter investigation (GPT-5.6 Luna, with retry + failover to a
+  configured fallback model when it is rate-limited).
 - `GET /kuma/status` — a STATUS_SPEC envelope gateway-fronting Uptime
   Kuma so the lab dashboard can show an alerting-watchdog tile.
 

@@ -132,6 +132,14 @@ def test_consult_defaults_are_reachable_models():
         assert model in CHAT_MODELS, f"consult model {model!r} is not in chat_models"
 
 
+def test_investigation_fallback_defaults_are_reachable_models():
+    """Failover is worthless if the fallback slugs aren't in the catalog."""
+    from pypoe.core.models import CHAT_MODELS
+
+    for model in lab_config.AlertsSection().investigation_fallback_models:
+        assert model in CHAT_MODELS, f"fallback model {model!r} is not in chat_models"
+
+
 def test_investigation_model_default_is_luna_max(monkeypatch):
     cfg = lab_config.load_config()
     assert cfg.alerts.investigation_model == "gpt-5.6-luna"

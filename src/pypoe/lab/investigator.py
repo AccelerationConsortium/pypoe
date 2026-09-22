@@ -7,6 +7,7 @@ OpenRouter or Poe only — no local CLI investigator.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -23,6 +24,17 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ROUNDS = 12
 MAX_TOOL_RESULT_CHARS = 8000
 DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.6-luna"
+
+#: Error codes worth retrying: an upstream rate limit or a transient provider
+#: fault, never a bad request / bad key / guardrail-blocked model — retrying
+#: those only burns the alert's response window. OpenRouter reports the code
+#: either as the HTTP status or, on a 200 body, in ``error.code``.
+RETRYABLE_CODES = frozenset({408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529})
+
+#: Backoff between attempts on one model. Short and bounded on purpose: an
+#: investigation that answers ten minutes late is no longer an alert response,
+#: so once these are spent we move to the next model instead of waiting more.
+RETRY_DELAYS_S = (5.0, 20.0)
 
 SYSTEM_PROMPT = """You are the AC Organic Self-driving Lab's automated incident \
 investigator. An alert has fired; investigate it using the read-only lab \
@@ -232,6 +244,39 @@ def resolve_investigation_model(name: str) -> str:
     return model
 
 
+def investigation_models(cfg_alerts: Any) -> list[str]:
+    """Primary model first, then the configured fallbacks, de-duplicated.
+
+    A single-model investigator dies on the first upstream rate limit (the
+    ``429 ... temporarily rate-limited upstream`` OpenRouter returns for a
+    busy model), which loses the whole alert. The fallbacks are ordinary
+    OpenRouter slugs tried in order; each must support tool-calling.
+    """
+    models = [resolve_investigation_model(cfg_alerts.investigation_model)]
+    for name in getattr(cfg_alerts, "investigation_fallback_models", ()) or ():
+        slug = resolve_investigation_model(name)
+        if slug not in models:
+            models.append(slug)
+    return models
+
+
+def _error_code(exc: ProviderError) -> Optional[int]:
+    """The provider's numeric error code, from the status or the JSON body."""
+    if exc.status_code:
+        return exc.status_code
+    try:
+        body = json.loads(str(exc))
+    except (TypeError, ValueError):
+        return None
+    err = body.get("error") if isinstance(body, dict) else None
+    code = err.get("code") if isinstance(err, dict) else None
+    return code if isinstance(code, int) else None
+
+
+def _is_retryable(exc: ProviderError) -> bool:
+    return _error_code(exc) in RETRYABLE_CODES
+
+
 def _truncate(value: Any) -> str:
     text = value if isinstance(value, str) else json.dumps(value, default=str)
     if len(text) > MAX_TOOL_RESULT_CHARS:
@@ -349,6 +394,63 @@ async def _complete(
     return message
 
 
+async def _complete_with_failover(
+    http: httpx.AsyncClient,
+    *,
+    api_key: str,
+    models: list[str],
+    messages: list[dict[str, Any]],
+    reasoning_effort: str,
+    max_tokens: Optional[int],
+    timeout_s: float,
+) -> tuple[dict[str, Any], str]:
+    """Complete one turn, retrying transient faults and failing over models.
+
+    Returns the assistant message and the model that produced it. The message
+    history is provider-agnostic OpenAI shape, so a mid-investigation switch
+    keeps every tool result already gathered.
+    """
+    last: Optional[ProviderError] = None
+    for model in models:
+        for attempt in range(len(RETRY_DELAYS_S) + 1):
+            try:
+                message = await _complete(
+                    http,
+                    api_key=api_key,
+                    model=model,
+                    messages=messages,
+                    reasoning_effort=reasoning_effort,
+                    max_tokens=max_tokens,
+                    timeout_s=timeout_s,
+                )
+                return message, model
+            except ProviderError as exc:
+                if not _is_retryable(exc):
+                    raise
+                last = exc
+                logger.warning(
+                    "investigator model %s attempt %d failed (code %s): %s",
+                    model,
+                    attempt + 1,
+                    _error_code(exc),
+                    exc,
+                )
+                if attempt < len(RETRY_DELAYS_S):
+                    await asyncio.sleep(RETRY_DELAYS_S[attempt])
+    assert last is not None  # models is never empty
+    raise last
+
+
+def _with_model_note(text: str, used_model: str, primary: str) -> str:
+    """Prefix a one-line note when the answer came from a fallback model."""
+    if used_model == primary:
+        return text
+    return (
+        f"_Lead investigator fell back to `{used_model}` — `{primary}` was "
+        f"rate-limited or unavailable._\n\n{text}"
+    )
+
+
 async def run_investigation(
     prompt: str,
     *,
@@ -366,7 +468,8 @@ async def run_investigation(
             "investigator."
         )
 
-    model = resolve_investigation_model(cfg.alerts.investigation_model)
+    models = investigation_models(cfg.alerts)
+    primary = models[0]
     timeout_s = float(cfg.alerts.investigation_timeout_s)
     max_tokens = getattr(app_cfg, "openrouter_max_tokens", 0) or None
     owns_lab = lab is None
@@ -380,21 +483,27 @@ async def run_investigation(
 
     try:
         for _round in range(MAX_TOOL_ROUNDS):
-            message = await _complete(
+            message, used_model = await _complete_with_failover(
                 http,
                 api_key=key,
-                model=model,
+                models=models,
                 messages=messages,
                 reasoning_effort=cfg.alerts.investigation_reasoning_effort,
                 max_tokens=max_tokens,
                 timeout_s=timeout_s,
             )
+            if used_model != models[0]:
+                # Stick with whatever answered: re-trying a rate-limited
+                # primary every tool round would pay the backoff up to
+                # MAX_TOOL_ROUNDS times, and a mid-investigation model
+                # switch per round is needless churn.
+                models = [used_model] + [m for m in models if m != used_model]
             messages.append(_assistant_message(message))
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 text = (message.get("content") or "").strip()
                 if text:
-                    return text
+                    return _with_model_note(text, used_model, primary)
                 return ":x: OpenRouter returned an empty investigator reply."
 
             for i, tc in enumerate(tool_calls):
@@ -422,6 +531,12 @@ async def run_investigation(
             f"({MAX_TOOL_ROUNDS}) without a final summary."
         )
     except ProviderError as exc:
+        if _is_retryable(exc) and len(models) > 1:
+            tried = ", ".join(f"`{m}`" for m in models)
+            return (
+                f":x: OpenRouter investigator failed — every model was rate-limited "
+                f"or unavailable ({tried}). Last error: {exc}"
+            )[:1500]
         return f":x: OpenRouter investigator failed: {exc}"[:1500]
     except httpx.HTTPError as exc:
         return f":x: OpenRouter investigator request failed: {exc}"

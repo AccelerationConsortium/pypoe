@@ -15,7 +15,8 @@ Precedence (highest wins):
   1. Explicit kwargs in code (e.g. ``LabClient(base_url=...)``).
   2. Environment variables (``LAB_API_URL``, ``LAB_SLACK_CHANNEL``,
      ``LAB_SLACK_COMMAND_PREFIX``, ``LAB_ALERT_MAX_CONCURRENT``,
-     ``LAB_INVESTIGATION_MODEL``, ``LAB_INVESTIGATION_TIMEOUT_S``,
+     ``LAB_INVESTIGATION_MODEL``, ``LAB_INVESTIGATION_FALLBACK_MODELS``,
+     ``LAB_INVESTIGATION_TIMEOUT_S``,
      ``LAB_MCP_AGENT_SOURCE``, ``LAB_MCP_HTTP_TIMEOUT``).
   3. Values in the YAML config.
   4. Hardcoded defaults below.
@@ -54,6 +55,16 @@ class AlertsSection:
     #: Env: ``LAB_INVESTIGATION_MODEL`` / ``LAB_INVESTIGATION_REASONING_EFFORT``.
     investigation_model: str = "gpt-5.6-luna"
     investigation_reasoning_effort: str = "max"
+    #: Tried in order when the primary is rate-limited or transiently failing
+    #: (OpenRouter's ``429 ... temporarily rate-limited upstream`` on a busy
+    #: model used to lose the whole investigation). Full OpenRouter slugs —
+    #: a bare id is prefixed ``openai/`` like the primary — and each must
+    #: support tool-calling. Empty disables failover.
+    #: Env: ``LAB_INVESTIGATION_FALLBACK_MODELS`` (comma-separated).
+    investigation_fallback_models: tuple[str, ...] = (
+        "anthropic/claude-sonnet-5",
+        "z-ai/glm-5.3",
+    )
     #: Hard wallclock cap (seconds) on a single OpenRouter investigation.
     #: Generous by default because an investigation fans out to several lab
     #: reads plus per-model ``consult_poe`` round-trips, but bounded so a hung
@@ -168,7 +179,7 @@ class ConsultSection:
     """
 
     enabled: bool = True
-    models: tuple[str, ...] = ("z-ai/glm-5.2", "deepseek/deepseek-v4-flash-0731")
+    models: tuple[str, ...] = ("z-ai/glm-5.3", "deepseek/deepseek-v4.1-flash")
 
 
 @dataclass(frozen=True)
@@ -286,6 +297,17 @@ def _env_list(name: str) -> Optional[tuple[str, ...]]:
     return items
 
 
+def _fallback_models(lab_root: dict) -> tuple[str, ...]:
+    """Investigator failover chain from env, then YAML, then the default."""
+    env_models = _env_list("LAB_INVESTIGATION_FALLBACK_MODELS")
+    if env_models is not None:
+        return env_models
+    yaml_models = _dig(lab_root, "alerts", "investigation_fallback_models")
+    if isinstance(yaml_models, list):
+        return tuple(m.strip() for m in yaml_models if isinstance(m, str) and m.strip())
+    return AlertsSection.__dataclass_fields__["investigation_fallback_models"].default
+
+
 def load_config() -> LabConfig:
     """Return the effective :class:`LabConfig` for this process.
 
@@ -334,6 +356,7 @@ def load_config() -> LabConfig:
             or _dig(lab_root, "alerts", "investigation_reasoning_effort")
             or AlertsSection.__dataclass_fields__["investigation_reasoning_effort"].default
         ),
+        investigation_fallback_models=_fallback_models(lab_root),
         investigation_timeout_s=(
             _env_float("LAB_INVESTIGATION_TIMEOUT_S")
             or _dig(lab_root, "alerts", "investigation_timeout_s")
