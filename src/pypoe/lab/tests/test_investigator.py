@@ -23,8 +23,8 @@ from pypoe.lab.investigator import (
 
 
 def test_resolve_investigation_model_prefixes_short_ids():
-    assert resolve_investigation_model("gpt-5.6-luna") == "openai/gpt-5.6-luna"
-    assert resolve_investigation_model("openai/gpt-5.6-luna") == "openai/gpt-5.6-luna"
+    assert resolve_investigation_model("gpt-6-luna") == "openai/gpt-6-luna"
+    assert resolve_investigation_model("openai/gpt-6-luna") == "openai/gpt-6-luna"
     assert resolve_investigation_model("") == DEFAULT_OPENROUTER_MODEL
 
 
@@ -107,7 +107,7 @@ async def test_run_investigation_tool_loop_then_summary(monkeypatch):
     )
     assert out == "Lead investigator: aggregator is healthy."
     first = http.payloads[0]
-    assert first["model"] == "openai/gpt-5.6-luna"
+    assert first["model"] == "openai/gpt-6-luna"
     assert first["reasoning"]["effort"] == "max"
     assert first["tools"]
     tool_msg = http.payloads[1]["messages"][-1]
@@ -175,21 +175,21 @@ async def test_run_investigation_unknown_tool_is_reported(monkeypatch):
 class _Alerts:
     """Minimal stand-in for ``LabConfig.alerts``."""
 
-    def __init__(self, model="gpt-5.6-luna", fallbacks=()):
+    def __init__(self, model="gpt-6-luna", fallbacks=()):
         self.investigation_model = model
         self.investigation_fallback_models = tuple(fallbacks)
 
 
 def test_investigation_models_appends_deduped_fallbacks():
     models = investigation_models(
-        _Alerts(fallbacks=("anthropic/claude-sonnet-5", "gpt-5.6-luna", "z-ai/glm-5.3"))
+        _Alerts(fallbacks=("anthropic/claude-sonnet-5", "gpt-6-luna", "z-ai/glm-5.3"))
     )
     assert models == [
-        "openai/gpt-5.6-luna",
+        "openai/gpt-6-luna",
         "anthropic/claude-sonnet-5",
         "z-ai/glm-5.3",
     ]
-    assert investigation_models(_Alerts()) == ["openai/gpt-5.6-luna"]
+    assert investigation_models(_Alerts()) == ["openai/gpt-6-luna"]
 
 
 def test_is_retryable_reads_status_and_body_codes():
@@ -248,7 +248,7 @@ def _patch_cfg(monkeypatch, fallbacks=("anthropic/claude-sonnet-5",)):
 @pytest.mark.asyncio
 async def test_run_investigation_fails_over_to_next_model(monkeypatch):
     _patch_cfg(monkeypatch)
-    http = _RateLimitedHTTP({"openai/gpt-5.6-luna"})
+    http = _RateLimitedHTTP({"openai/gpt-6-luna"})
 
     out = await run_investigation(
         "investigate",
@@ -258,7 +258,7 @@ async def test_run_investigation_fails_over_to_next_model(monkeypatch):
     )
 
     # Primary retried (1 + len(RETRY_DELAYS_S)) times, then the fallback answered.
-    assert http.models == ["openai/gpt-5.6-luna"] * (len(RETRY_DELAYS_S) + 1) + [
+    assert http.models == ["openai/gpt-6-luna"] * (len(RETRY_DELAYS_S) + 1) + [
         "anthropic/claude-sonnet-5"
     ]
     assert out.startswith("_Lead investigator fell back to `anthropic/claude-sonnet-5`")
@@ -268,7 +268,7 @@ async def test_run_investigation_fails_over_to_next_model(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_investigation_reports_when_every_model_is_limited(monkeypatch):
     _patch_cfg(monkeypatch)
-    http = _RateLimitedHTTP({"openai/gpt-5.6-luna", "anthropic/claude-sonnet-5"})
+    http = _RateLimitedHTTP({"openai/gpt-6-luna", "anthropic/claude-sonnet-5"})
 
     out = await run_investigation(
         "investigate",
@@ -278,7 +278,7 @@ async def test_run_investigation_reports_when_every_model_is_limited(monkeypatch
     )
 
     assert "every model was rate-limited or unavailable" in out
-    assert "`openai/gpt-5.6-luna`" in out and "`anthropic/claude-sonnet-5`" in out
+    assert "`openai/gpt-6-luna`" in out and "`anthropic/claude-sonnet-5`" in out
 
 
 @pytest.mark.asyncio
@@ -347,7 +347,7 @@ async def test_failover_sticks_for_later_tool_rounds(monkeypatch):
                 200, json={"choices": [{"message": {"content": "healthy."}}]}
             )
 
-    http = _ToolThenSummary({"openai/gpt-5.6-luna"})
+    http = _ToolThenSummary({"openai/gpt-6-luna"})
     out = await run_investigation(
         "investigate",
         lab=_Lab(),  # type: ignore[arg-type]
@@ -357,5 +357,5 @@ async def test_failover_sticks_for_later_tool_rounds(monkeypatch):
 
     assert "healthy." in out
     # The primary is tried only in the first round, not again for round two.
-    assert http.models.count("openai/gpt-5.6-luna") == len(RETRY_DELAYS_S) + 1
+    assert http.models.count("openai/gpt-6-luna") == len(RETRY_DELAYS_S) + 1
     assert http.models.count("anthropic/claude-sonnet-5") == 2

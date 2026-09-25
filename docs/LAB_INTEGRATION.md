@@ -33,7 +33,7 @@ Browser ──► Next.js (web/, :8000) ──► FastAPI aggregator (:8001) ─
    PyPoe Slack bot ──/lab-* commands ──────────────────┤   (no LLM)
                                                        │
    Uptime Kuma ──── /alerts/kuma ──► OpenRouter ───────┘
-                                       (GPT-5.6 Luna)
+                                       (GPT-6 Luna)
                                        │
                                        ├─► consult_poe (Poe / OpenRouter)
                                        └─► ask_human  (Slack thread reply)
@@ -89,7 +89,7 @@ lab:
     command_prefix: /lab-               # namespace for /lab-* commands
   alerts:
     max_concurrent_investigations: 2    # cap on simultaneous OpenRouter runs
-    investigation_model: gpt-5.6-luna   # OpenRouter lead investigator
+    investigation_model: gpt-6-luna   # OpenRouter lead investigator
     investigation_fallback_models:      # tried when the primary is 429/5xx
       - anthropic/claude-sonnet-5
       - z-ai/glm-5.3
@@ -104,9 +104,9 @@ lab:
       - deepseek/deepseek-v4.1-flash    # config/models.yaml::chat_models
 ```
 
-Two distinct models are in play: the **investigator** is GPT-5.6 Luna on
-OpenRouter (`investigation_model`, default `gpt-5.6-luna` →
-`openai/gpt-5.6-luna`, env `LAB_INVESTIGATION_MODEL`); the **second
+Two distinct models are in play: the **investigator** is GPT-6 Luna on
+OpenRouter (`investigation_model`, default `gpt-6-luna` →
+`openai/gpt-6-luna`, env `LAB_INVESTIGATION_MODEL`); the **second
 opinions** (`consult.models`, default `z-ai/glm-5.3`,
 `deepseek/deepseek-v4.1-flash`) go through PyPoe's provider seam, so
 each is routed to whichever provider its `models.yaml::chat_models`
@@ -295,7 +295,7 @@ POST its default JSON payload to `http://<host>:<port>/alerts/kuma`
    :mag: Investigating…` to `LAB_SLACK_CHANNEL` and captures the
    thread `ts`.
 2. A background task (bounded by `consult.max_concurrent_investigations`)
-   runs GPT-5.6 Luna on OpenRouter with in-process lab tools:
+   runs GPT-6 Luna on OpenRouter with in-process lab tools:
    - call `aggregator_health()` + `list_equipment()` first;
    - for each non-healthy device, call `get_equipment_status()` +
      `recent_events()`;
@@ -330,7 +330,7 @@ catalog entry requires — `OPENROUTER_API_KEY` for both defaults, or
 CLI or an MCP stdio server:
 
 - **Pinned model.** `alerts.investigation_model` (default
-  `gpt-5.6-luna` → `openai/gpt-5.6-luna`; env
+  `gpt-6-luna` → `openai/gpt-6-luna`; env
   `LAB_INVESTIGATION_MODEL`) is the OpenRouter id. Short names get
   the `openai/` prefix.
 - **Retry + model failover.** A rate limit or transient provider

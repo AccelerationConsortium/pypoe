@@ -105,7 +105,7 @@ systemctl --user is-active pypoe-web pypoe-slack
 
 ## Alert investigator
 
-Lab alert investigations call OpenRouter (`openai/gpt-5.6-luna`) with
+Lab alert investigations call OpenRouter (`openai/gpt-6-luna`) with
 in-process lab tools. Configure `lab.alerts.investigation_model`,
 `investigation_fallback_models`, and `investigation_reasoning_effort` in
 `src/pypoe/config/slack.yaml`, or override them with

@@ -50,10 +50,10 @@ class SlackSection:
 @dataclass(frozen=True)
 class AlertsSection:
     max_concurrent_investigations: int = 2
-    #: Lead investigator runs on OpenRouter (GPT-5.6 Luna). A short id such as
-    #: ``gpt-5.6-luna`` is prefixed to ``openai/gpt-5.6-luna``.
+    #: Lead investigator runs on OpenRouter (GPT-6 Luna). A short id such as
+    #: ``gpt-6-luna`` is prefixed to ``openai/gpt-6-luna``.
     #: Env: ``LAB_INVESTIGATION_MODEL`` / ``LAB_INVESTIGATION_REASONING_EFFORT``.
-    investigation_model: str = "gpt-5.6-luna"
+    investigation_model: str = "gpt-6-luna"
     investigation_reasoning_effort: str = "max"
     #: Tried in order when the primary is rate-limited or transiently failing
     #: (OpenRouter's ``429 ... temporarily rate-limited upstream`` on a busy

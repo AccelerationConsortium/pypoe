@@ -1,6 +1,6 @@
 """OpenRouter-backed alert investigator.
 
-The lead model is GPT-5.6 Luna on OpenRouter. Lab reads, journaling, and
+The lead model is GPT-6 Luna on OpenRouter. Lab reads, journaling, and
 ``consult_poe`` run in-process through :class:`LabClient`. PyPoe talks to
 OpenRouter or Poe only — no local CLI investigator.
 """
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 12
 MAX_TOOL_RESULT_CHARS = 8000
-DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.6-luna"
+DEFAULT_OPENROUTER_MODEL = "openai/gpt-6-luna"
 
 #: Error codes worth retrying: an upstream rate limit or a transient provider
 #: fault, never a bad request / bad key / guardrail-blocked model — retrying
@@ -237,7 +237,7 @@ TOOL_DEFS: list[dict[str, Any]] = [
 
 
 def resolve_investigation_model(name: str) -> str:
-    """Map a short id such as ``gpt-5.6-luna`` to an OpenRouter slug."""
+    """Map a short id such as ``gpt-6-luna`` to an OpenRouter slug."""
     model = (name or "").strip() or DEFAULT_OPENROUTER_MODEL
     if "/" not in model:
         return f"openai/{model}"
@@ -464,7 +464,7 @@ async def run_investigation(
     key = api_key if api_key is not None else app_cfg.openrouter_api_key
     if not key:
         return (
-            ":x: `OPENROUTER_API_KEY` is unset — cannot run the GPT-5.6 Luna "
+            ":x: `OPENROUTER_API_KEY` is unset — cannot run the GPT-6 Luna "
             "investigator."
         )
 

@@ -142,7 +142,7 @@ def test_investigation_fallback_defaults_are_reachable_models():
 
 def test_investigation_model_default_is_luna_max(monkeypatch):
     cfg = lab_config.load_config()
-    assert cfg.alerts.investigation_model == "gpt-5.6-luna"
+    assert cfg.alerts.investigation_model == "gpt-6-luna"
     assert cfg.alerts.investigation_reasoning_effort == "max"
 
 
